@@ -176,5 +176,91 @@ function Test-SqlBackup {
     }
 }
 
+function Restore-SqlChain {
+    <#
+    .SYNOPSIS
+        Restore a full -> diff -> log chain for log shipping or point-in-time recovery.
+    .DESCRIPTION
+        Picks the latest full backup, the latest differential after it, and
+        every log backup after the differential (or after the full when no
+        diff exists). Restores each WITH NORECOVERY except the last file,
+        which is RECOVERY by default, STANDBY with -StandbyFile, or left
+        NORECOVERY with -NoRecovery (shipping secondary stays loading).
+        Supports -WhatIf: prints the planned sequence without restoring.
+    .EXAMPLE
+        Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy
+    .EXAMPLE
+        Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy `
+            -Transform @('zstd') -StandbyFile /backups/standby.sby -WhatIf
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string]$Directory,
+        [Parameter(Mandatory)][string]$Database,
+        [Parameter(Mandatory)][string]$TargetDatabase,
+        [string]$FullPattern,
+        [string]$DiffPattern,
+        [string]$LogPattern,
+        [string[]]$Transform = @('zstd'),
+        [string]$ServerInstance,
+        [string]$StandbyFile,
+        [switch]$NoRecovery,
+        [string]$ExePath
+    )
+    if (-not $FullPattern) { $FullPattern = "$Database`_full_*" }
+    if (-not $DiffPattern) { $DiffPattern = "$Database`_diff_*" }
+    if (-not $LogPattern) { $LogPattern = "$Database`_log_*" }
+
+    $full = Get-ChildItem -LiteralPath $Directory -File -Filter $FullPattern |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $full) { throw "No full backup matching $FullPattern in $Directory" }
+    $diff = Get-ChildItem -LiteralPath $Directory -File -Filter $DiffPattern |
+        Where-Object { $_.LastWriteTime -ge $full.LastWriteTime } |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $anchor = if ($diff) { $diff } else { $full }
+    $logs = @(Get-ChildItem -LiteralPath $Directory -File -Filter $LogPattern |
+        Where-Object { $_.LastWriteTime -ge $anchor.LastWriteTime } |
+        Sort-Object LastWriteTime)
+    if (-not $logs -or $logs.Count -eq 0) {
+        Write-Warning "No log backups after $($anchor.Name); restoring full/diff only."
+    }
+
+    $sequence = @(
+        @{ File = $full; Recovery = 'norecovery' }
+    )
+    if ($diff) { $sequence += @{ File = $diff; Recovery = 'norecovery' } }
+    $lastIndex = $sequence.Count + $logs.Count - 1
+    $i = $sequence.Count
+    foreach ($log in $logs) {
+        $mode = 'norecovery'
+        if ($i -eq $lastIndex) {
+            if ($StandbyFile) { $mode = "standby=$StandbyFile" }
+            elseif (-not $NoRecovery) { $mode = 'recovery' }
+        }
+        $sequence += @{ File = $log; Recovery = $mode }
+        $i++
+    }
+    if ($logs.Count -eq 0 -and -not $NoRecovery -and -not $StandbyFile) {
+        $sequence[-1].Recovery = 'recovery'
+    }
+
+    $dbOpts = @{ database = $TargetDatabase }
+    if ($ServerInstance) { $dbOpts['instancename'] = $ServerInstance }
+    foreach ($step in $sequence) {
+        $opts = $dbOpts.Clone()
+        $opts['replace'] = $null
+        foreach ($flag in ($step.Recovery -split ',')) {
+            if ($flag -like 'standby=*') { $opts['standby'] = $flag.Substring(8) }
+            else { $opts[$flag] = $null }
+        }
+        $args = @('restore', (Join-PluginConfig 'local' @{ path = $step.File.FullName })) +
+            $Transform + @((Join-PluginConfig 'db' $opts))
+        if ($PSCmdlet.ShouldProcess($step.File.Name, "restore WITH $($step.Recovery.ToUpper())")) {
+            $null = Invoke-SqlSqueeze -Arguments $args -ExePath $ExePath
+            Write-Host ("Restored {0} WITH {1}" -f $step.File.Name, $step.Recovery.ToUpper())
+        }
+    }
+}
+
 Export-ModuleMember -Function Backup-SqlDatabase, Restore-SqlDatabase,
-    Remove-SqlBackup, Test-SqlBackup
+    Remove-SqlBackup, Test-SqlBackup, Restore-SqlChain

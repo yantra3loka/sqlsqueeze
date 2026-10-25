@@ -11,11 +11,21 @@ Backup-SqlDatabase -Database app -Path /backups/app.bak.gz.aes `
     -Transform @('gzip', 'aes(passwordEnv=BACKUP_KEY)') -BackupType Differential -Checksum
 Restore-SqlDatabase -Path /backups/app.bak.zst -Database app_copy -Replace
 Remove-SqlBackup -Directory /backups -Pattern '*.bak.zst' -OlderThanDays 30
+Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy
+Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy -StandbyFile /backups/undo.sby -WhatIf
 Test-SqlBackup -Path /backups/app.bak.zst -ServerInstance .  # +VERIFYONLY when sqlcmd exists
 ```
 
 Every call runs the CLI with `--json` and returns the result object;
 failures throw with the server-side message.
+
+## Storage write retries
+
+`local(path=...)` accepts `writeretries=N` (total attempts, default 1 =
+no retry) and `writeretrybackoffms=M` (base backoff, default 1000,
+doubling each attempt). Transient `IOException`s on write/flush are
+retried; anything else fails fast. For dropped shares start with
+`writeretries=5`.
 
 ## SQL Agent jobs (`sql-agent/`)
 

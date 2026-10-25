@@ -35,6 +35,8 @@ namespace SqlSqueeze.Plugins.Storage
         {
             mBackupParamSchema = new Dictionary<string, ParameterInfo>(StringComparer.InvariantCultureIgnoreCase);
             mBackupParamSchema.Add("path", new ParameterInfo(true, true));
+            mBackupParamSchema.Add("writeretries", new ParameterInfo(false, false));
+            mBackupParamSchema.Add("writeretrybackoffms", new ParameterInfo(false, false));
         }
 
         #region IBackupStorage Members
@@ -87,10 +89,22 @@ namespace SqlSqueeze.Plugins.Storage
                 Console.WriteLine(string.Format("\tpath={0}", fi.FullName));
             }
 
+            int writeRetries = ResolveWriterRetries(config);
+            int writeRetryBackoffMs = ResolveWriterRetryBackoffMs(config);
+            if (writeRetries > 1)
+            {
+                Console.WriteLine(string.Format("\twriteretries={0} writeretrybackoffms={1}", writeRetries, writeRetryBackoffMs));
+            }
+
             List<Stream> results = new List<Stream>(fileInfos.Count);
             foreach (FileInfo fi in fileInfos)
             {
-                results.Add(fi.Open(FileMode.Create));
+                Stream writer = fi.Open(FileMode.Create);
+                if (writeRetries > 1)
+                {
+                    writer = new WriteRetryStream(writer, writeRetries, writeRetryBackoffMs);
+                }
+                results.Add(writer);
             }
 
             return results.ToArray();
@@ -146,8 +160,42 @@ local(path=<file>)
 sqlsqueeze has an alias for the local plugin.  If it begins with file://, it is
 converted to the 'local' plugin equivalent.  file:///c:\model.bak is converted
 to local(path=c:\model.bak).
+
+For flaky shares add writeretries=<total attempts> and
+writeretrybackoffms=<base backoff in ms, doubling>; only transient
+write/flush errors are retried.
 ";
             }
+        }
+
+        private static int ResolveWriterRetries(Dictionary<string, List<string>> config)
+        {
+            List<string> values;
+            if (!config.TryGetValue("writeretries", out values) || values.Count == 0)
+            {
+                return 1;
+            }
+            int retries;
+            if (!int.TryParse(values[0], out retries) || retries < 1)
+            {
+                throw new ArgumentException("writeretries must be an integer >= 1 (total attempts).");
+            }
+            return retries;
+        }
+
+        private static int ResolveWriterRetryBackoffMs(Dictionary<string, List<string>> config)
+        {
+            List<string> values;
+            if (!config.TryGetValue("writeretrybackoffms", out values) || values.Count == 0)
+            {
+                return 1000;
+            }
+            int backoffMs;
+            if (!int.TryParse(values[0], out backoffMs) || backoffMs < 0)
+            {
+                throw new ArgumentException("writeretrybackoffms must be an integer >= 0.");
+            }
+            return backoffMs;
         }
 
         public void CleanupOnAbort()
