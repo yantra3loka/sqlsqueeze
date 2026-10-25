@@ -34,6 +34,29 @@ variables at the top of each file and run it. Full nightly + prune,
 diff every 4h, log every 15min. Filenames use sqlsqueeze `{yyyyMMdd_HHmmss}`
 tokens — no `%date%` parsing.
 
+`Verify-Backup-Job.sql` runs a nightly `RESTORE VERIFYONLY` over the
+newest native-format full backup — VERIFYONLY rejects compressed outputs
+by design, so it targets native-format files. `Alert-Operator.sql` creates
+the msdb operator and wires failure notifications onto the four backup
+jobs (e-mail needs Database Mail configured on the instance).
+
+## Cron wrapper (`cron/sqlsqueeze-cron.sh`)
+
+Runs a backup from cron and POSTs a JSON webhook when it fails:
+
+```bash
+export WEBHOOK_URL='https://hooks.example.com/sqlsqueeze'
+0 2 * * * /opt/sqlsqueeze/tools/cron/sqlsqueeze-cron.sh backup \
+    "db(database=app)" zstd "local(path=/backups/app.bak.zst)"
+```
+
+Arguments go straight to the CLI (the wrapper appends `--json`), and the
+CLI's exit code is the wrapper's exit code, so cron still sees the
+failure. The webhook body is `{status, operation, exitCode, message,
+timestamp, host}`. `WEBHOOK_URL` and the optional `WEBHOOK_TOKEN` (a
+Bearer token) come from the environment — no URL, token or password is
+stored in the script.
+
 ## msdb dashboard (`msdb/BackupHistory.sql`)
 
 Creates `dbo.SqlSqueezeBackupHistory` (works for native backups too —
