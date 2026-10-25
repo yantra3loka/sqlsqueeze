@@ -48,6 +48,9 @@ namespace SqlSqueeze.Plugins.Database
             mBackupParamSchema.Add("continue_after_error", new ParameterInfo(false, false));
             mBackupParamSchema.Add("BufferCount", new ParameterInfo(false, false));
             mBackupParamSchema.Add("MaxTransferSize", new ParameterInfo(false, false));
+            mBackupParamSchema.Add("user", new ParameterInfo(false, false));
+            mBackupParamSchema.Add("password", new ParameterInfo(false, false));
+            mBackupParamSchema.Add("passwordenv", new ParameterInfo(false, false));
 
 
             mRestoreParamSchema = new Dictionary<string, ParameterInfo>(StringComparer.InvariantCultureIgnoreCase);
@@ -78,6 +81,9 @@ namespace SqlSqueeze.Plugins.Database
             mRestoreParamSchema.Add("MOVE", new ParameterInfo(true, false));
             mRestoreParamSchema.Add("BufferCount", new ParameterInfo(false, false));
             mRestoreParamSchema.Add("MaxTransferSize", new ParameterInfo(false, false));
+            mRestoreParamSchema.Add("user", new ParameterInfo(false, false));
+            mRestoreParamSchema.Add("password", new ParameterInfo(false, false));
+            mRestoreParamSchema.Add("passwordenv", new ParameterInfo(false, false));
 
         }
 
@@ -656,6 +662,8 @@ want to connect to localhost\sqlexpress, then enter instance=sqlexpress above.
 If no instancename parameter is given, then it will connect to the default 
 instance.
 If you have a cluster, please see the online documentation about the ClusterNetworkName option.
+
+Without user= it logs in with Windows integrated auth. With user=<login> plus password=<pw> or passwordenv=<VAR> it uses a SQL login (passwordEnv= is recommended: command lines are visible in process lists). SQL logins are what make Linux work, where there is no Kerberos.
 
 This plugin can only connect to SQL Server locally.
 

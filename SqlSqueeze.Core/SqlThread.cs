@@ -52,9 +52,9 @@ namespace SqlSqueeze.Core
                 // data source, e.g. instancename=(localdb)\MSSQLLocalDB.
                 dataSource = instanceName;
             }
-            string connectionString = string.Format("Data Source={0};Initial Catalog=master;Integrated Security=SSPI;TrustServerCertificate=true;", dataSource);
+            string connectionString = BuildConnectionString(dataSource, dbConfig);
 
-            notifier.OnConnecting(string.Format("Connecting: {0}", connectionString));
+            notifier.OnConnecting(string.Format("Connecting: {0}", RedactConnectionString(connectionString)));
 
             mCnn = new SqlConnection(connectionString);
             mCnn.Open();
@@ -82,6 +82,70 @@ namespace SqlSqueeze.Core
 
             return deviceNames;
 
+        }
+
+        /// <summary>
+        /// Builds the connection string for the SQL Server. Without user=,
+        /// this is the historical SSPI string (Windows integrated auth).
+        /// With user= plus password= or passwordEnv=, it is a SQL login,
+        /// which is what makes Linux (no Kerberos) work.
+        /// </summary>
+        internal static string BuildConnectionString(string dataSource, Dictionary<string, List<string>> dbConfig)
+        {
+            string user;
+            if (dbConfig.TryGetValue("user", out List<string> users) && users.Count > 0 && !string.IsNullOrEmpty(users[0]))
+            {
+                user = users[0];
+            }
+            else
+            {
+                return string.Format("Data Source={0};Initial Catalog=master;Integrated Security=SSPI;TrustServerCertificate=true;", dataSource);
+            }
+
+            string password = ResolvePassword(dbConfig);
+            SqlConnectionStringBuilder builder = new SqlConnectionStringBuilder();
+            builder.DataSource = dataSource;
+            builder.InitialCatalog = "master";
+            builder.UserID = user;
+            builder.Password = password;
+            builder.TrustServerCertificate = true;
+            return builder.ConnectionString;
+        }
+
+        /// <summary>
+        /// Removes the password from a connection string for display and
+        /// logging. SSPI strings have no secret and pass through unchanged.
+        /// </summary>
+        internal static string RedactConnectionString(string connectionString)
+        {
+            SqlConnectionStringBuilder builder = new SqlConnectionStringBuilder(connectionString);
+            if (!builder.IntegratedSecurity && !string.IsNullOrEmpty(builder.Password))
+            {
+                builder.Password = "********";
+            }
+            return builder.ConnectionString;
+        }
+
+        private static string ResolvePassword(Dictionary<string, List<string>> dbConfig)
+        {
+            if (dbConfig.TryGetValue("passwordenv", out List<string> envNames) && envNames.Count > 0)
+            {
+                string value = Environment.GetEnvironmentVariable(envNames[0]);
+                if (string.IsNullOrEmpty(value))
+                {
+                    throw new ArgumentException(string.Format("db: environment variable is empty or missing, cannot log in: {0}", envNames[0]));
+                }
+                return value;
+            }
+            if (dbConfig.TryGetValue("password", out List<string> passwords) && passwords.Count > 0)
+            {
+                if (string.IsNullOrEmpty(passwords[0]))
+                {
+                    throw new ArgumentException("db: empty password, cannot log in.");
+                }
+                return passwords[0];
+            }
+            throw new ArgumentException("db: user= needs password= or passwordEnv= to log in.");
         }
 
         private static long CalculateEstimatedDatabaseSize(SqlConnection cnn, Dictionary<string, List<string>> dbConfig)
