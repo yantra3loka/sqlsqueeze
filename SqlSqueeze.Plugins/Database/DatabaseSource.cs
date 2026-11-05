@@ -461,7 +461,7 @@ namespace SqlSqueeze.Plugins.Database
                 {
                     standbyFile = standbyFile.Substring(0, standbyFile.Length - 1);
                 }
-                if (standbyFile.Length == 0)
+                if (standbyFile.Trim().Length == 0)
                 {
                     throw new ArgumentException("db: STANDBY parameter must have a value.");
                 }

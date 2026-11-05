@@ -13,11 +13,22 @@ Restore-SqlDatabase -Path /backups/app.bak.zst -Database app_copy -Replace
 Remove-SqlBackup -Directory /backups -Pattern '*.bak.zst' -OlderThanDays 30
 Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy
 Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy -StandbyFile /backups/undo.sby -WhatIf
+Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy -StopAt '2024-05-01 13:30:00'
 Test-SqlBackup -Path /backups/app.bak.zst -ServerInstance .  # +VERIFYONLY when sqlcmd exists
 ```
 
 Every call runs the CLI with `--json` and returns the result object;
 failures throw with the server-side message.
+
+`Restore-SqlChain` picks the latest full, the latest diff after it, and
+the logs after that, restoring everything `NORECOVERY` except the tail
+(`RECOVERY`, or `STANDBY` with `-StandbyFile`, or `NORECOVERY` with
+`-NoRecovery`). Files with a `copy...only` marker after the
+`<db>_<type>_` prefix are never picked (mark copy-only backups that way;
+`Backup-SqlDatabase -CopyOnly` warns when `-Path` has no marker).
+`-StopAt` puts `STOPAT` on every log restore and stops at the log
+containing the target time; it errors when there is no log to stop in.
+`-StandbyFile` and `-NoRecovery` cannot be combined.
 
 ## Storage write retries
 

@@ -195,5 +195,96 @@ namespace SqlSqueeze.Tests
         {
             Assert.Throws<ArgumentException>(() => Restore(("database", "mydb"), ("move", move)));
         }
+
+        [Theory]
+        [InlineData("'   '")]
+        [InlineData("' '")]
+        public void Restore_QuotedBlankStandby_Throws(string standby)
+        {
+            Assert.Throws<ArgumentException>(() => Restore(("database", "mydb"), ("standby", standby)));
+        }
+
+        [Fact]
+        public void Restore_StandbyWithStopAt_Works()
+        {
+            SqlCommand cmd = Restore(("database", "mydb"), ("standby", "s.bak"), ("stopat", "2024-05-01 13:30:00"));
+            Assert.Contains("STANDBY='s.bak'", cmd.CommandText);
+            Assert.Contains("STOPAT=@stopat", cmd.CommandText);
+        }
+
+        [Fact]
+        public void Restore_StandbyWithReplace_Works()
+        {
+            SqlCommand cmd = Restore(("database", "mydb"), ("standby", "s.bak"), ("replace", "x"));
+            Assert.Contains("STANDBY='s.bak'", cmd.CommandText);
+            Assert.Contains("REPLACE", cmd.CommandText);
+        }
+
+        [Fact]
+        public void Restore_NoRecoveryWithStopAt_Works()
+        {
+            SqlCommand cmd = Restore(("database", "mydb"), ("norecovery", "x"), ("stopat", "2024-05-01 13:30:00"));
+            Assert.Contains("NORECOVERY", cmd.CommandText);
+            Assert.Contains("STOPAT=@stopat", cmd.CommandText);
+        }
+
+        [Fact]
+        public void Backup_ChecksumWithContinueAfterError_Works()
+        {
+            SqlCommand cmd = Backup(("database", "mydb"), ("checksum", "x"), ("continue_after_error", "x"));
+            Assert.Contains("CHECKSUM", cmd.CommandText);
+            Assert.Contains("CONTINUE_AFTER_ERROR", cmd.CommandText);
+        }
+
+        [Fact]
+        public void Backup_CopyOnlyFull_Works()
+        {
+            SqlCommand cmd = Backup(("database", "mydb"), ("backuptype", "full"), ("copy_only", "x"));
+            Assert.Contains("COPY_ONLY", cmd.CommandText);
+        }
+
+        [Fact]
+        public void Backup_DifferentialWithChecksum_Works()
+        {
+            SqlCommand cmd = Backup(("database", "mydb"), ("backuptype", "differential"), ("checksum", "x"));
+            Assert.Contains("DIFFERENTIAL", cmd.CommandText);
+            Assert.Contains("CHECKSUM", cmd.CommandText);
+        }
+
+        [Fact]
+        public void Restore_RecoveryAlone_Works()
+        {
+            SqlCommand cmd = Restore(("database", "mydb"), ("recovery", "x"));
+            Assert.Contains("RECOVERY", cmd.CommandText);
+            Assert.DoesNotContain("NORECOVERY", cmd.CommandText);
+        }
+
+        [Fact]
+        public void Restore_NoChecksumAlone_Works()
+        {
+            SqlCommand cmd = Restore(("database", "mydb"), ("no_checksum", "x"));
+            Assert.Contains("NO_CHECKSUM", cmd.CommandText);
+        }
+
+        [Fact]
+        public void Restore_MultipleMove_Works()
+        {
+            SqlCommand cmd = Restore(("database", "mydb"), ("move", "'data' TO 'data2'"), ("move", "'log' TO 'log2'"));
+            Assert.Contains("MOVE 'data' TO 'data2'", cmd.CommandText);
+            Assert.Contains("MOVE 'log' TO 'log2'", cmd.CommandText);
+        }
+
+        [Fact]
+        public void Restore_Move_PathWithSpaces_Works()
+        {
+            SqlCommand cmd = Restore(("database", "mydb"), ("move", "'my data' TO 'D:\\my backups\\data2.mdf'"));
+            Assert.Contains("MOVE 'my data' TO 'D:\\my backups\\data2.mdf'", cmd.CommandText);
+        }
+
+        [Fact]
+        public void Restore_Move_NonToKeyword_Throws()
+        {
+            Assert.Throws<ArgumentException>(() => Restore(("database", "mydb"), ("move", "'data' FROM 'data2'")));
+        }
     }
 }

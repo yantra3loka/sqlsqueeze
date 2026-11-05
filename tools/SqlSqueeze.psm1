@@ -74,7 +74,12 @@ function Backup-SqlDatabase {
     )
     $dbOpts = @{ database = $Database; backuptype = $BackupType.ToLowerInvariant() }
     if ($ServerInstance) { $dbOpts['instancename'] = $ServerInstance }
-    if ($CopyOnly) { $dbOpts['copy_only'] = $null }
+    if ($CopyOnly) {
+        $dbOpts['copy_only'] = $null
+        if ([System.IO.Path]::GetFileName($Path) -notlike '*copy*only*') {
+            Write-Warning "CopyOnly backup path has no 'copyonly' marker; Restore-SqlChain skips chain files by that marker, so include e.g. _copyonly in -Path."
+        }
+    }
     if ($Checksum) { $dbOpts['checksum'] = $null }
     $args = @('backup', (Join-PluginConfig 'db' $dbOpts)) + $Transform +
         @((Join-PluginConfig 'local' @{ path = $Path }))
@@ -184,11 +189,15 @@ function Restore-SqlChain {
         Picks the latest full backup, the latest differential after it, and
         every log backup after the differential (or after the full when no
         diff exists). Copy-only backups are never picked: they break the
-        LSN chain. Restores each WITH NORECOVERY except the last file,
-        which is RECOVERY by default, STANDBY with -StandbyFile, or left
-        NORECOVERY with -NoRecovery (shipping secondary stays loading).
-        -StopAt applies STOPAT to the final log restore for point-in-time
-        recovery; it errors when the plan has no log to stop in.
+        LSN chain. Detection is by file name (a 'copy...only' marker after
+        the '<db>_<type>_' prefix), so mark copy-only files accordingly.
+        Restores each WITH NORECOVERY except the last file, which is
+        RECOVERY by default, STANDBY with -StandbyFile, or left NORECOVERY
+        with -NoRecovery (shipping secondary stays loading). With no logs
+        the tail is the full or diff itself. -StandbyFile and -NoRecovery
+        cannot be combined. -StopAt applies STOPAT to every log restore
+        for point-in-time recovery and stops at the log containing the
+        target time; it errors when the plan has no log to stop in.
         Supports -WhatIf: prints the planned sequence without restoring.
     .EXAMPLE
         Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy
@@ -217,42 +226,63 @@ function Restore-SqlChain {
     if ($PSBoundParameters.ContainsKey('StandbyFile') -and [string]::IsNullOrWhiteSpace($StandbyFile)) {
         throw "StandbyFile must be a non-empty path when specified. Omit -StandbyFile for a RECOVERY tail or use -NoRecovery to stay loading."
     }
+    if (-not [string]::IsNullOrWhiteSpace($StandbyFile) -and $NoRecovery) {
+        throw "StandbyFile and NoRecovery cannot be combined: STANDBY cannot be combined with NORECOVERY."
+    }
     if (-not $FullPattern) { $FullPattern = "$Database`_full_*" }
     if (-not $DiffPattern) { $DiffPattern = "$Database`_diff_*" }
     if (-not $LogPattern) { $LogPattern = "$Database`_log_*" }
+    $fullPrefix = "${Database}_full_"
+    $diffPrefix = "${Database}_diff_"
+    $logPrefix = "${Database}_log_"
 
     # Copy-only backups break the LSN chain, so they can never anchor or
-    # extend it. Match the marker case-insensitively (-like is OrdinalIgnoreCase
-    # by default) and consistently across every picker.
-    $notCopyOnly = { ($_.Name -notlike '*copy*only*') }
+    # extend it. The planner only sees file names, so match the marker
+    # only AFTER the "<db>_<type>_" prefix: a database whose own name
+    # contains 'copy...only' must not be skipped. Backup-SqlDatabase
+    # -CopyOnly warns when the path carries no such marker.
+    function Test-CopyOnlyName([string]$Name, [string]$Prefix) {
+        $rest = $Name
+        if ($rest.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            $rest = $rest.Substring($Prefix.Length)
+        }
+        return ($rest -like '*copy*only*')
+    }
     $full = Get-ChildItem -LiteralPath $Directory -File -Filter $FullPattern |
-        Where-Object $notCopyOnly |
+        Where-Object { -not (Test-CopyOnlyName $_.Name $fullPrefix) } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $full) { throw "No full backup matching $FullPattern in $Directory" }
     $diff = Get-ChildItem -LiteralPath $Directory -File -Filter $DiffPattern |
-        Where-Object $notCopyOnly |
+        Where-Object { -not (Test-CopyOnlyName $_.Name $diffPrefix) } |
         Where-Object { $_.LastWriteTime -ge $full.LastWriteTime } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     $anchor = if ($diff) { $diff } else { $full }
     $logs = @(Get-ChildItem -LiteralPath $Directory -File -Filter $LogPattern |
-        Where-Object $notCopyOnly |
+        Where-Object { -not (Test-CopyOnlyName $_.Name $logPrefix) } |
         Where-Object { $_.LastWriteTime -ge $anchor.LastWriteTime } |
         Sort-Object LastWriteTime)
     if (-not $logs -or $logs.Count -eq 0) {
         Write-Warning "No log backups after $($anchor.Name); restoring full/diff only."
     }
 
+    $stopAtBound = $PSBoundParameters.ContainsKey('StopAt') -and $null -ne $StopAt
+    $stopAtText = $null
+    if ($stopAtBound) {
+        $stopAtText = $StopAt.ToString('yyyy-MM-dd HH:mm:ss', [cultureinfo]::InvariantCulture)
+        if (-not $logs -or $logs.Count -eq 0) {
+            throw "StopAt requires a log backup to stop in: the plan ends at a full/differential backup with no log to apply STOPAT to."
+        }
+        # Point-in-time restores apply STOPAT to every log restore and stop
+        # at the log containing the target time (file time is the proxy for
+        # coverage end): earlier logs plus the first log after the target.
+        $containing = @($logs | Where-Object { $_.LastWriteTime -gt $StopAt } |
+            Select-Object -First 1)
+        $logs = @(@($logs | Where-Object { $_.LastWriteTime -le $StopAt }) + $containing)
+    }
     $sequence = @(
         @{ File = $full; Recovery = 'norecovery' }
     )
     if ($diff) { $sequence += @{ File = $diff; Recovery = 'norecovery' } }
-    if ($PSBoundParameters.ContainsKey('StopAt') -and $null -ne $StopAt -and (-not $logs -or $logs.Count -eq 0)) {
-        throw "StopAt requires a log backup to stop in: the plan ends at a full/differential backup with no log to apply STOPAT to."
-    }
-    $stopAtText = $null
-    if ($PSBoundParameters.ContainsKey('StopAt') -and $null -ne $StopAt) {
-        $stopAtText = $StopAt.ToString('yyyy-MM-dd HH:mm:ss', [cultureinfo]::InvariantCulture)
-    }
     $lastIndex = $sequence.Count + $logs.Count - 1
     $i = $sequence.Count
     foreach ($log in $logs) {
@@ -261,15 +291,15 @@ function Restore-SqlChain {
             if ($StandbyFile) { $mode = "standby=$StandbyFile" }
             elseif (-not $NoRecovery) { $mode = 'recovery' }
         }
-        # STOPAT is a point-in-time option for log restores only, so it
-        # rides on the final log step and nowhere else.
         $step = @{ File = $log; Recovery = $mode }
-        if ($i -eq $lastIndex -and $stopAtText) { $step['StopAt'] = $stopAtText }
+        if ($stopAtText) { $step['StopAt'] = $stopAtText }
         $sequence += $step
         $i++
     }
-    if ($logs.Count -eq 0 -and -not $NoRecovery -and -not $StandbyFile) {
-        $sequence[-1].Recovery = 'recovery'
+    if ($logs.Count -eq 0) {
+        # No logs: the tail is the full or diff itself.
+        if ($StandbyFile) { $sequence[-1].Recovery = "standby=$StandbyFile" }
+        elseif (-not $NoRecovery) { $sequence[-1].Recovery = 'recovery' }
     }
 
     $dbOpts = @{ database = $TargetDatabase }

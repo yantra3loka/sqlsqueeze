@@ -43,8 +43,9 @@ emitted once, `backuptype`/`restoretype` values are case-insensitive
 (`Full`, `FULL`, `full` all work), and contradictory options throw
 (`CHECKSUM`+`NO_CHECKSUM`, `STOP_ON_ERROR`+`CONTINUE_AFTER_ERROR`,
 `RECOVERY`+`NORECOVERY`, `STANDBY`+`RECOVERY`/`NORECOVERY`). Empty
-`STANDBY`/empty `MOVE` endpoints and a lowercase `to` in `MOVE` are
-rejected; `MOVE ... TO ...` matching is case-insensitive.
+`STANDBY` (including quoted blanks) and empty `MOVE` endpoints are
+rejected; `MOVE ... TO ...` matching is case-insensitive, so a lowercase
+`to` is accepted.
 
 ## Scripting
 
@@ -149,7 +150,7 @@ setups DBAs already run); anything that only works untested.
 - `dotnet build -c Release`: 0 warnings, 0 errors (Linux).
 - CLI `version` / `listplugins` / `help`: pass.
   (`sqlsqueeze v1.3.0.0 (.NET 10.0.13, X64)`, all 8 plugins found.)
-- xUnit suite: **77/77 pass** — pipeline round-trips (gzip, bzip2,
+- xUnit suite: **90/90 pass** — pipeline round-trips (gzip, bzip2,
   zip64 named + first, zstd, rate, local, gzip→aes chain), AES (env key,
   random salt, wrong-password/truncated/missing-key failures, KDF golden
   vector), prune (age/pattern/defaults/validation), date tokens, backend
