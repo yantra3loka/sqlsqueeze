@@ -21,6 +21,31 @@ Plugins: `db` (database) · `gzip` `bzip2` `zip64` `zstd` `aes` `rate`
 (pipeline) · `local` (file storage). Run `sqlsqueeze help`,
 `sqlsqueeze listplugins`, `sqlsqueeze helpplugin <name>` for details.
 
+## Striped (parallel multi-file) backup
+
+One database, N files in parallel — the equivalent of T-SQL
+`BACKUP DATABASE [MyDatabase] TO DISK='...Part1.bak', DISK='...Part2.bak',
+...`. Give `local` one `path=` per stripe; each path becomes one VDI
+device with its own thread:
+
+```text
+sqlsqueeze backup "db(database=MyDatabase)" zstd "local(path=D:\Backups\MyDatabase_Part1.bak.zst;path=D:\Backups\MyDatabase_Part2.bak.zst;path=D:\Backups\MyDatabase_Part3.bak.zst)"
+```
+
+The stripe count is variable — two paths, three paths, however many the
+job needs. Restore must open the same stripes in the same order.
+`Restore-SqlChain` (PowerShell module) skips copy-only backups on every
+picker (full, diff, and logs) so a copy-only file can never anchor or
+extend a chain, and `-StopAt` attaches only to the final log restore.
+
+Option guards fail fast instead of producing invalid SQL: `PARTIAL` is
+emitted once, `backuptype`/`restoretype` values are case-insensitive
+(`Full`, `FULL`, `full` all work), and contradictory options throw
+(`CHECKSUM`+`NO_CHECKSUM`, `STOP_ON_ERROR`+`CONTINUE_AFTER_ERROR`,
+`RECOVERY`+`NORECOVERY`, `STANDBY`+`RECOVERY`/`NORECOVERY`). Empty
+`STANDBY`/empty `MOVE` endpoints and a lowercase `to` in `MOVE` are
+rejected; `MOVE ... TO ...` matching is case-insensitive.
+
 ## Scripting
 
 - `--json` on backup/restore/prune: one result object on stdout, exit
@@ -124,11 +149,13 @@ setups DBAs already run); anything that only works untested.
 - `dotnet build -c Release`: 0 warnings, 0 errors (Linux).
 - CLI `version` / `listplugins` / `help`: pass.
   (`sqlsqueeze v1.3.0.0 (.NET 10.0.13, X64)`, all 8 plugins found.)
-- xUnit suite: **26/26 pass** — pipeline round-trips (gzip, bzip2,
+- xUnit suite: **77/77 pass** — pipeline round-trips (gzip, bzip2,
   zip64 named + first, zstd, rate, local, gzip→aes chain), AES (env key,
   random salt, wrong-password/truncated/missing-key failures, KDF golden
   vector), prune (age/pattern/defaults/validation), date tokens, backend
-  selection, restore byte counting.
+  selection, restore byte counting, plus `DatabaseSource` option guards
+  (single `PARTIAL`, case-insensitive backup/restore types, contradictory
+  `WITH` combos throw, `MOVE`/`STANDBY` validation).
 - Backend selection on Linux without SQL Server: factory picks the Linux
   backend and fails with the friendly missing-`libmsbpvdi.so` error:
   **PASS**. Struct/enum values asserted: **PASS**.

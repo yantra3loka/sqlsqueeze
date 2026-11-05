@@ -183,15 +183,21 @@ function Restore-SqlChain {
     .DESCRIPTION
         Picks the latest full backup, the latest differential after it, and
         every log backup after the differential (or after the full when no
-        diff exists). Restores each WITH NORECOVERY except the last file,
+        diff exists). Copy-only backups are never picked: they break the
+        LSN chain. Restores each WITH NORECOVERY except the last file,
         which is RECOVERY by default, STANDBY with -StandbyFile, or left
         NORECOVERY with -NoRecovery (shipping secondary stays loading).
+        -StopAt applies STOPAT to the final log restore for point-in-time
+        recovery; it errors when the plan has no log to stop in.
         Supports -WhatIf: prints the planned sequence without restoring.
     .EXAMPLE
         Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy
     .EXAMPLE
         Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy `
             -Transform @('zstd') -StandbyFile /backups/standby.sby -WhatIf
+    .EXAMPLE
+        Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy `
+            -StopAt '2024-05-01 13:30:00' -WhatIf
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -205,20 +211,31 @@ function Restore-SqlChain {
         [string]$ServerInstance,
         [string]$StandbyFile,
         [switch]$NoRecovery,
+        [Nullable[datetime]]$StopAt = $null,
         [string]$ExePath
     )
+    if ($PSBoundParameters.ContainsKey('StandbyFile') -and [string]::IsNullOrWhiteSpace($StandbyFile)) {
+        throw "StandbyFile must be a non-empty path when specified. Omit -StandbyFile for a RECOVERY tail or use -NoRecovery to stay loading."
+    }
     if (-not $FullPattern) { $FullPattern = "$Database`_full_*" }
     if (-not $DiffPattern) { $DiffPattern = "$Database`_diff_*" }
     if (-not $LogPattern) { $LogPattern = "$Database`_log_*" }
 
+    # Copy-only backups break the LSN chain, so they can never anchor or
+    # extend it. Match the marker case-insensitively (-like is OrdinalIgnoreCase
+    # by default) and consistently across every picker.
+    $notCopyOnly = { ($_.Name -notlike '*copy*only*') }
     $full = Get-ChildItem -LiteralPath $Directory -File -Filter $FullPattern |
+        Where-Object $notCopyOnly |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $full) { throw "No full backup matching $FullPattern in $Directory" }
     $diff = Get-ChildItem -LiteralPath $Directory -File -Filter $DiffPattern |
+        Where-Object $notCopyOnly |
         Where-Object { $_.LastWriteTime -ge $full.LastWriteTime } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     $anchor = if ($diff) { $diff } else { $full }
     $logs = @(Get-ChildItem -LiteralPath $Directory -File -Filter $LogPattern |
+        Where-Object $notCopyOnly |
         Where-Object { $_.LastWriteTime -ge $anchor.LastWriteTime } |
         Sort-Object LastWriteTime)
     if (-not $logs -or $logs.Count -eq 0) {
@@ -229,6 +246,13 @@ function Restore-SqlChain {
         @{ File = $full; Recovery = 'norecovery' }
     )
     if ($diff) { $sequence += @{ File = $diff; Recovery = 'norecovery' } }
+    if ($PSBoundParameters.ContainsKey('StopAt') -and $null -ne $StopAt -and (-not $logs -or $logs.Count -eq 0)) {
+        throw "StopAt requires a log backup to stop in: the plan ends at a full/differential backup with no log to apply STOPAT to."
+    }
+    $stopAtText = $null
+    if ($PSBoundParameters.ContainsKey('StopAt') -and $null -ne $StopAt) {
+        $stopAtText = $StopAt.ToString('yyyy-MM-dd HH:mm:ss', [cultureinfo]::InvariantCulture)
+    }
     $lastIndex = $sequence.Count + $logs.Count - 1
     $i = $sequence.Count
     foreach ($log in $logs) {
@@ -237,7 +261,11 @@ function Restore-SqlChain {
             if ($StandbyFile) { $mode = "standby=$StandbyFile" }
             elseif (-not $NoRecovery) { $mode = 'recovery' }
         }
-        $sequence += @{ File = $log; Recovery = $mode }
+        # STOPAT is a point-in-time option for log restores only, so it
+        # rides on the final log step and nowhere else.
+        $step = @{ File = $log; Recovery = $mode }
+        if ($i -eq $lastIndex -and $stopAtText) { $step['StopAt'] = $stopAtText }
+        $sequence += $step
         $i++
     }
     if ($logs.Count -eq 0 -and -not $NoRecovery -and -not $StandbyFile) {
@@ -253,6 +281,7 @@ function Restore-SqlChain {
             if ($flag -like 'standby=*') { $opts['standby'] = $flag.Substring(8) }
             else { $opts[$flag] = $null }
         }
+        if ($step.ContainsKey('StopAt')) { $opts['stopat'] = $step.StopAt }
         $args = @('restore', (Join-PluginConfig 'local' @{ path = $step.File.FullName })) +
             $Transform + @((Join-PluginConfig 'db' $opts))
         if ($PSCmdlet.ShouldProcess($step.File.Name, "restore WITH $($step.Recovery.ToUpper())")) {

@@ -153,14 +153,15 @@ namespace SqlSqueeze.Core
 
             string version = GetVersion(cnn);
 
-            string backupType = "full";
+            string backupTypeRaw = "full";
             if (dbConfig.ContainsKey("backuptype"))
             {
-                backupType = dbConfig["backuptype"][0].ToLowerInvariant();
+                backupTypeRaw = dbConfig["backuptype"][0] ?? string.Empty;
             }
+            string backupType = backupTypeRaw.ToLowerInvariant();
             if (backupType != "full" && backupType != "differential" && backupType != "log")
             {
-                throw new ArgumentException(string.Format("db: Unknown backuptype: {0}", backupType));
+                throw new ArgumentException(string.Format("db: Unknown backuptype: {0}", backupTypeRaw));
             }
 
             string databaseName = dbConfig["database"][0];

@@ -27,6 +27,12 @@ doubling each attempt). Transient `IOException`s on write/flush are
 retried; anything else fails fast. For dropped shares start with
 `writeretries=5`.
 
+Repeat `path=` for striped (parallel multi-file) backups — one `path`
+per stripe, e.g.
+`local(path=/backups/app_p1.bak.zst;path=/backups/app_p2.bak.zst)`.
+Device count is the path count (variable, not fixed). Restore needs the
+same stripes in the same order.
+
 ## SQL Agent jobs (`sql-agent/`)
 
 CmdExec-only templates (work on Windows and Linux Agent): edit the four
