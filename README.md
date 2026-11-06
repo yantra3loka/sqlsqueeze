@@ -25,6 +25,57 @@ Plugins: `db` (database) · `gzip` `bzip2` `zip64` `zstd` `aes` `rate`
 (pipeline) · `local` `s3` `azure` (storage). Run `sqlsqueeze help`,
 `sqlsqueeze listplugins`, `sqlsqueeze helpplugin <name>` for details.
 
+## Striped (parallel multi-file) backup
+
+One database, N files in parallel — the equivalent of T-SQL
+`BACKUP DATABASE [MyDatabase] TO DISK='...Part1.bak', DISK='...Part2.bak',
+...`. Give `local` one `path=` per stripe; each path becomes one VDI
+device with its own thread:
+
+```text
+sqlsqueeze backup "db(database=MyDatabase)" zstd "local(path=D:\Backups\MyDatabase_Part1.bak.zst;path=D:\Backups\MyDatabase_Part2.bak.zst;path=D:\Backups\MyDatabase_Part3.bak.zst)"
+```
+
+From the PowerShell module, `-Path` takes one string or a string array.
+One path emits the same `local(path=...)` argument as before. Several
+paths are one backup striped across drives — use this when the database
+does not fit on a single volume (here, `C:` and `D:`):
+
+```powershell
+Backup-SqlDatabase -Database app -Path @(
+    'C:\Backups\app_full_20261106_013000_s01of02.bak.zst',
+    'D:\Backups\app_full_20261106_013000_s02of02.bak.zst')
+```
+
+That command line is
+`local(path=C:\Backups\app_full_20261106_013000_s01of02.bak.zst;path=D:\Backups\app_full_20261106_013000_s02of02.bak.zst)`.
+
+Copy-only backups need a `copy...only` marker in the file name, after
+the `<db>_<type>_` prefix, on every stripe
+(`app_full_copyonly_20261106_013000_s01of02.bak.zst`,
+`app_full_copyonly_20261106_013000_s02of02.bak.zst`).
+`Restore-SqlChain` skips those names. `Backup-SqlDatabase -CopyOnly`
+warns once for each stripe whose file name lacks the marker.
+
+WITH FORMAT is default-on at the engine level (each stripe path is
+created fresh; there is no format switch). Native COMPRESSION is
+replaced by the zstd/gzip transform.
+
+The stripe count is variable — two paths, three paths, however many the
+job needs. Restore must open the same stripes in the same order.
+`Restore-SqlChain` (PowerShell module) groups these stripes as one restore
+step, skips copy-only backups on every picker (full, diff, and logs), and
+applies `-StopAt` to every selected log restore.
+
+Option guards fail fast instead of producing invalid SQL: `PARTIAL` is
+emitted once, `backuptype`/`restoretype` values are case-insensitive
+(`Full`, `FULL`, `full` all work), and contradictory options throw
+(`CHECKSUM`+`NO_CHECKSUM`, `STOP_ON_ERROR`+`CONTINUE_AFTER_ERROR`,
+`RECOVERY`+`NORECOVERY`, `STANDBY`+`RECOVERY`/`NORECOVERY`). Empty
+`STANDBY` (including quoted blanks) and empty `MOVE` endpoints are
+rejected; `MOVE ... TO ...` matching is case-insensitive, so a lowercase
+`to` is accepted.
+
 Ctrl-C is graceful: the first press aborts the running backup/restore
 through the normal failure path (partial files removed, database put back
 to multi-user); a second press kills immediately.
@@ -366,7 +417,7 @@ setups DBAs already run); anything that only works untested.
 - `dotnet build -c Release`: 0 warnings, 0 errors (Linux).
 - CLI `version` / `listplugins` / `help`: pass.
   (`sqlsqueeze v1.3.0.0 (.NET 10.0.13, X64)`, all 8 plugins found.)
-- xUnit suite: **139/139 pass** — database selection, full/diff/log
+- xUnit suite: **370/370 pass** after merging the roadmap and DBA tests — database selection, full/diff/log
   planning and the `backup-all` runner (fakes, no SQL Server), data
   source and `@@VERSION` parsing; manifest, verify (intact, flipped byte,
   truncated, wrong password, striped, no manifest) and every ordered pair

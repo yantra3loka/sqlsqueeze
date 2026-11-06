@@ -46,6 +46,10 @@ namespace SqlSqueeze.Plugins.Database
             mBackupParamSchema.Add("no_checksum", new ParameterInfo(false, false));
             mBackupParamSchema.Add("stop_on_error", new ParameterInfo(false, false));
             mBackupParamSchema.Add("continue_after_error", new ParameterInfo(false, false));
+            mBackupParamSchema.Add("format", new ParameterInfo(false, false));
+            mBackupParamSchema.Add("noformat", new ParameterInfo(false, false));
+            mBackupParamSchema.Add("name", new ParameterInfo(false, false));
+            mBackupParamSchema.Add("stats", new ParameterInfo(false, false));
             mBackupParamSchema.Add("BufferCount", new ParameterInfo(false, false));
             mBackupParamSchema.Add("MaxTransferSize", new ParameterInfo(false, false));
             mBackupParamSchema.Add("user", new ParameterInfo(false, false));
@@ -115,7 +119,7 @@ namespace SqlSqueeze.Plugins.Database
 
             if (config.ContainsKey("backuptype"))
             {
-                switch (config["backuptype"][0])
+                switch ((config["backuptype"][0] ?? string.Empty).ToLowerInvariant())
                 {
                     case "full":
                         backupType = BackupType.Full;
@@ -132,6 +136,53 @@ namespace SqlSqueeze.Plugins.Database
             }
 
             List<string> withOptions = new List<string>();
+            if (config.ContainsKey("CHECKSUM") && config.ContainsKey("NO_CHECKSUM"))
+            {
+                throw new ArgumentException("db: CHECKSUM and NO_CHECKSUM cannot both be specified.");
+            }
+
+            if (config.ContainsKey("STOP_ON_ERROR") && config.ContainsKey("CONTINUE_AFTER_ERROR"))
+            {
+                throw new ArgumentException("db: STOP_ON_ERROR and CONTINUE_AFTER_ERROR cannot both be specified.");
+            }
+
+            if (config.ContainsKey("format") && config.ContainsKey("noformat"))
+            {
+                throw new ArgumentException("db: FORMAT and NOFORMAT cannot both be specified.");
+            }
+
+            // WITH FORMAT is always used unless explicitly opted out: it
+            // overwrites any existing backups and starts a clean media set.
+            if (!config.ContainsKey("noformat"))
+            {
+                withOptions.Add("FORMAT");
+            }
+
+            if (config.ContainsKey("name"))
+            {
+                List<string> nameValues = config["name"];
+                if (nameValues == null || nameValues.Count == 0 || nameValues[0] == null || nameValues[0].Trim().Length == 0)
+                {
+                    throw new ArgumentException("db: NAME parameter must have a value.");
+                }
+                if (nameValues[0].Contains("'"))
+                {
+                    throw new ArgumentException("db: The backup name cannot have a single quote (') in it.");
+                }
+                withOptions.Add(string.Format("NAME='{0}'", nameValues[0].Trim()));
+            }
+
+            if (config.ContainsKey("stats"))
+            {
+                List<string> statsValues = config["stats"];
+                int statsVal = -1;
+                if (statsValues == null || statsValues.Count == 0 || statsValues[0] == null || !int.TryParse(statsValues[0].Trim(), out statsVal) || statsVal < 0 || statsVal > 100)
+                {
+                    throw new ArgumentException(string.Format("db: STATS parameter must be a number between 0 and 100: {0}", statsValues != null && statsValues.Count > 0 ? statsValues[0] : ""));
+                }
+                withOptions.Add(string.Format("STATS={0}", statsVal));
+            }
+
             List<string> filegroupOptions = new List<string>();
 
             if (config.ContainsKey("READ_WRITE_FILEGROUPS"))
@@ -329,7 +380,7 @@ namespace SqlSqueeze.Plugins.Database
 
             if (config.ContainsKey("restoretype"))
             {
-                switch (config["restoretype"][0])
+                switch ((config["restoretype"][0] ?? string.Empty).ToLowerInvariant())
                 {
                     case "database":
                         restoreType = RestoreType.Database;
@@ -357,6 +408,26 @@ namespace SqlSqueeze.Plugins.Database
 
 
             List<string> withOptions = new List<string>();
+            if (config.ContainsKey("CHECKSUM") && config.ContainsKey("NO_CHECKSUM"))
+            {
+                throw new ArgumentException("db: CHECKSUM and NO_CHECKSUM cannot both be specified.");
+            }
+
+            if (config.ContainsKey("STOP_ON_ERROR") && config.ContainsKey("CONTINUE_AFTER_ERROR"))
+            {
+                throw new ArgumentException("db: STOP_ON_ERROR and CONTINUE_AFTER_ERROR cannot both be specified.");
+            }
+
+            if (config.ContainsKey("RECOVERY") && config.ContainsKey("NORECOVERY"))
+            {
+                throw new ArgumentException("db: RECOVERY and NORECOVERY cannot both be specified.");
+            }
+
+            if (config.ContainsKey("STANDBY") && (config.ContainsKey("RECOVERY") || config.ContainsKey("NORECOVERY")))
+            {
+                throw new ArgumentException("db: STANDBY cannot be combined with RECOVERY or NORECOVERY.");
+            }
+
             List<string> filegroupOptions = new List<string>();
 
             if (config.ContainsKey("CHECKSUM"))
@@ -423,7 +494,16 @@ namespace SqlSqueeze.Plugins.Database
 
             if (config.ContainsKey("STANDBY"))
             {
-                string standbyFile = config["STANDBY"][0].Trim();
+                List<string> standbyValues = config["STANDBY"];
+                if (standbyValues == null || standbyValues.Count == 0 || standbyValues[0] == null)
+                {
+                    throw new ArgumentException("db: STANDBY parameter must have a value.");
+                }
+                string standbyFile = standbyValues[0].Trim();
+                if (standbyFile.Length == 0)
+                {
+                    throw new ArgumentException("db: STANDBY parameter must have a value.");
+                }
                 if (standbyFile.StartsWith("'"))
                 {
                     standbyFile = standbyFile.Substring(1);
@@ -431,6 +511,10 @@ namespace SqlSqueeze.Plugins.Database
                 if (standbyFile.EndsWith("'"))
                 {
                     standbyFile = standbyFile.Substring(0, standbyFile.Length - 1);
+                }
+                if (standbyFile.Trim().Length == 0)
+                {
+                    throw new ArgumentException("db: STANDBY parameter must have a value.");
                 }
                 if (standbyFile.Contains("'"))
                 {
@@ -555,8 +639,12 @@ namespace SqlSqueeze.Plugins.Database
                     string moveFrom = moveSplit[1];
                     string moveToKeyword = moveSplit[2].Trim(); ;
                     string moveTo = moveSplit[3];
+                    if (string.IsNullOrWhiteSpace(moveFrom) || string.IsNullOrWhiteSpace(moveTo))
+                    {
+                        throw new ArgumentException(string.Format("db: Invalid MOVE clause: {0}.  Please write it in the form MOVE='from'TO'to'", moveInfo));
+                    }
 
-                    if (moveToKeyword != "TO")
+                    if (!string.Equals(moveToKeyword, "TO", StringComparison.OrdinalIgnoreCase))
                     {
                         throw new ArgumentException(string.Format("db: Invalid MOVE clause: {0}.  Please write it in the form MOVE='from'TO'to'", moveInfo));
                     }
