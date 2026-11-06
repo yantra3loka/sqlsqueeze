@@ -286,5 +286,66 @@ namespace SqlSqueeze.Tests
         {
             Assert.Throws<ArgumentException>(() => Restore(("database", "mydb"), ("move", "'data' FROM 'data2'")));
         }
+
+        [Fact]
+        public void Backup_Format_EmittedByDefault()
+        {
+            SqlCommand cmd = Backup(("database", "mydb"), ("backuptype", "full"));
+            Assert.Contains("FORMAT", cmd.CommandText);
+        }
+
+        [Fact]
+        public void Backup_NoFormat_RemovesFormat()
+        {
+            SqlCommand cmd = Backup(("database", "mydb"), ("noformat", "x"));
+            Assert.DoesNotContain("FORMAT", cmd.CommandText);
+        }
+
+        [Fact]
+        public void Backup_FormatAndNoFormat_Throws()
+        {
+            Assert.Throws<ArgumentException>(() => Backup(("database", "mydb"), ("format", "x"), ("noformat", "x")));
+        }
+
+        [Fact]
+        public void Backup_Name_Works()
+        {
+            SqlCommand cmd = Backup(("database", "mydb"), ("name", "Full Backup of mydb"));
+            Assert.Contains("NAME='Full Backup of mydb'", cmd.CommandText);
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        public void Backup_EmptyName_Throws(string name)
+        {
+            Assert.Throws<ArgumentException>(() => Backup(("database", "mydb"), ("name", name)));
+        }
+
+        [Fact]
+        public void Backup_NameWithQuote_Throws()
+        {
+            Assert.Throws<ArgumentException>(() => Backup(("database", "mydb"), ("name", "o'brien")));
+        }
+
+        [Theory]
+        [InlineData("0")]
+        [InlineData("10")]
+        [InlineData("100")]
+        public void Backup_Stats_Works(string stats)
+        {
+            SqlCommand cmd = Backup(("database", "mydb"), ("stats", stats));
+            Assert.Contains("STATS=" + stats, cmd.CommandText);
+        }
+
+        [Theory]
+        [InlineData("banana")]
+        [InlineData("-1")]
+        [InlineData("101")]
+        [InlineData("")]
+        public void Backup_InvalidStats_Throws(string stats)
+        {
+            Assert.Throws<ArgumentException>(() => Backup(("database", "mydb"), ("stats", stats)));
+        }
     }
 }

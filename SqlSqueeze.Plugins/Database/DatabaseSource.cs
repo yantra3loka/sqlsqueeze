@@ -46,6 +46,10 @@ namespace SqlSqueeze.Plugins.Database
             mBackupParamSchema.Add("no_checksum", new ParameterInfo(false, false));
             mBackupParamSchema.Add("stop_on_error", new ParameterInfo(false, false));
             mBackupParamSchema.Add("continue_after_error", new ParameterInfo(false, false));
+            mBackupParamSchema.Add("format", new ParameterInfo(false, false));
+            mBackupParamSchema.Add("noformat", new ParameterInfo(false, false));
+            mBackupParamSchema.Add("name", new ParameterInfo(false, false));
+            mBackupParamSchema.Add("stats", new ParameterInfo(false, false));
             mBackupParamSchema.Add("BufferCount", new ParameterInfo(false, false));
             mBackupParamSchema.Add("MaxTransferSize", new ParameterInfo(false, false));
             mBackupParamSchema.Add("user", new ParameterInfo(false, false));
@@ -138,6 +142,43 @@ namespace SqlSqueeze.Plugins.Database
             if (config.ContainsKey("STOP_ON_ERROR") && config.ContainsKey("CONTINUE_AFTER_ERROR"))
             {
                 throw new ArgumentException("db: STOP_ON_ERROR and CONTINUE_AFTER_ERROR cannot both be specified.");
+            }
+
+            if (config.ContainsKey("format") && config.ContainsKey("noformat"))
+            {
+                throw new ArgumentException("db: FORMAT and NOFORMAT cannot both be specified.");
+            }
+
+            // WITH FORMAT is always used unless explicitly opted out: it
+            // overwrites any existing backups and starts a clean media set.
+            if (!config.ContainsKey("noformat"))
+            {
+                withOptions.Add("FORMAT");
+            }
+
+            if (config.ContainsKey("name"))
+            {
+                List<string> nameValues = config["name"];
+                if (nameValues == null || nameValues.Count == 0 || nameValues[0] == null || nameValues[0].Trim().Length == 0)
+                {
+                    throw new ArgumentException("db: NAME parameter must have a value.");
+                }
+                if (nameValues[0].Contains("'"))
+                {
+                    throw new ArgumentException("db: The backup name cannot have a single quote (') in it.");
+                }
+                withOptions.Add(string.Format("NAME='{0}'", nameValues[0].Trim()));
+            }
+
+            if (config.ContainsKey("stats"))
+            {
+                List<string> statsValues = config["stats"];
+                int statsVal = -1;
+                if (statsValues == null || statsValues.Count == 0 || statsValues[0] == null || !int.TryParse(statsValues[0].Trim(), out statsVal) || statsVal < 0 || statsVal > 100)
+                {
+                    throw new ArgumentException(string.Format("db: STATS parameter must be a number between 0 and 100: {0}", statsValues != null && statsValues.Count > 0 ? statsValues[0] : ""));
+                }
+                withOptions.Add(string.Format("STATS={0}", statsVal));
             }
 
             List<string> filegroupOptions = new List<string>();

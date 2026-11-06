@@ -51,6 +51,23 @@ function Join-PluginConfig {
     return -join $parts
 }
 
+function Join-LocalPathConfig {
+    param([string[]]$Path)
+    # One path must stay a single path= value: a hashtable cannot hold
+    # duplicate keys, and Join-PluginConfig is what a string -Path emits.
+    # Several paths repeat path= (one VDI device each). Semicolons inside
+    # a path are doubled the same way, so the config parser keeps them.
+    $paths = @($Path)
+    if ($paths.Count -le 1) {
+        $one = if ($paths.Count -eq 1) { [string]$paths[0] } else { '' }
+        return Join-PluginConfig 'local' @{ path = $one }
+    }
+    $pairs = foreach ($p in $paths) {
+        ("path=$p") -replace ';', ';;'
+    }
+    return 'local(' + ($pairs -join ';') + ')'
+}
+
 function Backup-SqlDatabase {
     <#
     .SYNOPSIS
@@ -60,11 +77,20 @@ function Backup-SqlDatabase {
     .EXAMPLE
         Backup-SqlDatabase -Database app -Path /backups/app.bak.gz.aes `
             -Transform @('gzip', 'aes(passwordEnv=BACKUP_KEY)') -BackupType Differential
+    .EXAMPLE
+        # One backup striped across drives when the database does not fit on one volume.
+        Backup-SqlDatabase -Database app -Path @(
+            'C:\Backups\app_full_p1.bak.zst',
+            'D:\Backups\app_full_p2.bak.zst')
+    .PARAMETER Path
+        One backup file, or several stripes of one backup. A single path
+        produces the same local(path=...) argument as before. Several paths
+        become local(path=A;path=B) — one VDI device per path.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)][string]$Database,
-        [Parameter(Mandatory, Position = 1)][string]$Path,
+        [Parameter(Mandatory, Position = 1)][string[]]$Path,
         [string[]]$Transform = @('zstd'),
         [string]$ServerInstance,
         [ValidateSet('Full', 'Differential', 'Log')][string]$BackupType = 'Full',
@@ -76,13 +102,16 @@ function Backup-SqlDatabase {
     if ($ServerInstance) { $dbOpts['instancename'] = $ServerInstance }
     if ($CopyOnly) {
         $dbOpts['copy_only'] = $null
-        if ([System.IO.Path]::GetFileName($Path) -notlike '*copy*only*') {
-            Write-Warning "CopyOnly backup path has no 'copyonly' marker; Restore-SqlChain skips chain files by that marker, so include e.g. _copyonly in -Path."
+        foreach ($p in @($Path)) {
+            $name = [System.IO.Path]::GetFileName([string]$p)
+            if ($name -notlike '*copy*only*') {
+                Write-Warning "CopyOnly backup path '$name' has no 'copyonly' marker; Restore-SqlChain skips chain files by that marker, so include e.g. _copyonly in -Path."
+            }
         }
     }
     if ($Checksum) { $dbOpts['checksum'] = $null }
     $args = @('backup', (Join-PluginConfig 'db' $dbOpts)) + $Transform +
-        @((Join-PluginConfig 'local' @{ path = $Path }))
+        @((Join-LocalPathConfig -Path $Path))
     $result = Invoke-SqlSqueeze -Arguments $args -ExePath $ExePath
     Write-Host ("Backup complete: {0:N0} bytes in {1:N1}s ({2:N1} MB/s)" -f
         $result.bytesProcessed, $result.elapsedSeconds, $result.mbPerSecond)
@@ -240,7 +269,7 @@ function Restore-SqlChain {
     # extend it. The planner only sees file names, so match the marker
     # only AFTER the "<db>_<type>_" prefix: a database whose own name
     # contains 'copy...only' must not be skipped. Backup-SqlDatabase
-    # -CopyOnly warns when the path carries no such marker.
+    # -CopyOnly warns once per path whose file name lacks that marker.
     function Test-CopyOnlyName([string]$Name, [string]$Prefix) {
         $rest = $Name
         if ($rest.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase)) {

@@ -32,6 +32,30 @@ device with its own thread:
 sqlsqueeze backup "db(database=MyDatabase)" zstd "local(path=D:\Backups\MyDatabase_Part1.bak.zst;path=D:\Backups\MyDatabase_Part2.bak.zst;path=D:\Backups\MyDatabase_Part3.bak.zst)"
 ```
 
+From the PowerShell module, `-Path` takes one string or a string array.
+One path emits the same `local(path=...)` argument as before. Several
+paths are one backup striped across drives — use this when the database
+does not fit on a single volume (here, `C:` and `D:`):
+
+```powershell
+Backup-SqlDatabase -Database app -Path @(
+    'C:\Backups\app_full_p1.bak.zst',
+    'D:\Backups\app_full_p2.bak.zst')
+```
+
+That command line is
+`local(path=C:\Backups\app_full_p1.bak.zst;path=D:\Backups\app_full_p2.bak.zst)`.
+
+Copy-only backups need a `copy...only` marker in the file name, after
+the `<db>_<type>_` prefix, on every stripe
+(`app_full_copyonly_p1.bak.zst`, `app_full_copyonly_p2.bak.zst`).
+`Restore-SqlChain` skips those names. `Backup-SqlDatabase -CopyOnly`
+warns once for each stripe whose file name lacks the marker.
+
+WITH FORMAT is default-on at the engine level (each stripe path is
+created fresh; there is no format switch). Native COMPRESSION is
+replaced by the zstd/gzip transform.
+
 The stripe count is variable — two paths, three paths, however many the
 job needs. Restore must open the same stripes in the same order.
 `Restore-SqlChain` (PowerShell module) skips copy-only backups on every

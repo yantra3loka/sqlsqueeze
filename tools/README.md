@@ -7,6 +7,10 @@ Import-Module ./tools/SqlSqueeze.psm1
 $env:SQLSQUEEZE_EXE = 'C:\tools\sqlsqueeze\sqlsqueeze.exe'  # or put it on PATH
 
 Backup-SqlDatabase -Database app -Path /backups/app.bak.zst
+# One backup, two drives, when the database does not fit on one volume:
+Backup-SqlDatabase -Database app -Path @(
+    'C:\Backups\app_full_p1.bak.zst',
+    'D:\Backups\app_full_p2.bak.zst')
 Backup-SqlDatabase -Database app -Path /backups/app.bak.gz.aes `
     -Transform @('gzip', 'aes(passwordEnv=BACKUP_KEY)') -BackupType Differential -Checksum
 Restore-SqlDatabase -Path /backups/app.bak.zst -Database app_copy -Replace
@@ -20,12 +24,23 @@ Test-SqlBackup -Path /backups/app.bak.zst -ServerInstance .  # +VERIFYONLY when 
 Every call runs the CLI with `--json` and returns the result object;
 failures throw with the server-side message.
 
+`Backup-SqlDatabase -Path` takes one path or several. One path is a
+single file and keeps the previous `local(path=...)` command line.
+Several paths are one striped backup, `local(path=A;path=B)`, for a
+database that does not fit on one drive (`C:` plus `D:` above). WITH
+FORMAT is default-on at the engine level (each path is created fresh;
+there is no format switch). Native COMPRESSION is replaced by the
+zstd/gzip transform.
+
 `Restore-SqlChain` picks the latest full, the latest diff after it, and
 the logs after that, restoring everything `NORECOVERY` except the tail
 (`RECOVERY`, or `STANDBY` with `-StandbyFile`, or `NORECOVERY` with
-`-NoRecovery`). Files with a `copy...only` marker after the
-`<db>_<type>_` prefix are never picked (mark copy-only backups that way;
-`Backup-SqlDatabase -CopyOnly` warns when `-Path` has no marker).
+`-NoRecovery`). It still restores one file per step. Files with a
+`copy...only` marker after the `<db>_<type>_` prefix are never picked
+(mark every stripe that way, e.g. `app_full_copyonly_p1.bak.zst` on `C:`
+and `app_full_copyonly_p2.bak.zst` on `D:`). `Backup-SqlDatabase
+-CopyOnly` warns once per `-Path` entry whose file name has no such
+marker.
 `-StopAt` puts `STOPAT` on every log restore and stops at the log
 containing the target time; it errors when there is no log to stop in.
 `-StandbyFile` and `-NoRecovery` cannot be combined.
@@ -41,8 +56,13 @@ retried; anything else fails fast. For dropped shares start with
 Repeat `path=` for striped (parallel multi-file) backups — one `path`
 per stripe, e.g.
 `local(path=/backups/app_p1.bak.zst;path=/backups/app_p2.bak.zst)`.
+`Backup-SqlDatabase -Path` joins a path array the same way, so a
+database too big for one drive can split across `C:` and `D:`.
 Device count is the path count (variable, not fixed). Restore needs the
-same stripes in the same order.
+same stripes in the same order. WITH FORMAT is default-on at the engine
+level; native COMPRESSION is replaced by the zstd/gzip transform.
+Copy-only stripe file names still need a `copy...only` marker
+(`app_full_copyonly_p1.bak.zst`); `-CopyOnly` warns per unmarked path.
 
 ## SQL Agent jobs (`sql-agent/`)
 
