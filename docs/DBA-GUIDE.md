@@ -143,10 +143,25 @@ sqlsqueeze.exe restore-chain D:\Backups MyDB --db "db" --as MyDB_copy --json
 ```
 
 Picks the latest full, the latest diff after it, and every log after that
-(copy-only backups excluded), restores in order. Useful flags: `--stopat
-"<time>"` (point in time, server local), `--dry-run` (print plan only),
-`--norecovery` / `--standby <file>` (leave restoring/readable),
-`--replace`, `--kill-connections`. Local folders only.
+(copy-only backups excluded), restores in order. Useful flags: `--dry-run`
+(print plan only), `--norecovery` / `--standby <file>` (leave
+restoring/readable), `--replace`, `--kill-connections`. Local folders only.
+
+`--stopat "<time>"` restores what was current at that server-local time.
+The plan keeps the latest full at or before that time, the latest
+differential after the full and at or before that time, and the logs after
+that anchor: every log taken before the time, plus the first log taken at
+or after it (that log covers the stop time). `STOPAT` is sent on every log
+step, not only the last.
+
+PowerShell `Restore-SqlChain -StopAt '<time>'` uses that same cutoff,
+judged by file time (the stripe timestamp when the name matches, otherwise
+last-write time), and puts `STOPAT` on every selected log restore. It
+errors, and restores nothing, when the plan has no log backup to stop in.
+`-StandbyFile` and `-NoRecovery` cannot be combined, and a blank
+`-StandbyFile` is rejected. The last step is `RECOVERY` unless one of
+those two is set. With no logs, that tail is the full or differential
+itself.
 
 ## Cancelling (Ctrl-C)
 
