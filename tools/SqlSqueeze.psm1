@@ -220,7 +220,7 @@ function Restore-SqlChain {
         diff exists). Copy-only backups are never picked: they break the
         LSN chain. Detection is by file name (a 'copy...only' marker after
         the '<db>_<type>_' prefix), so mark copy-only files accordingly.
-        Restores each WITH NORECOVERY except the last file, which is
+        Restores each backup set WITH NORECOVERY except the last set, which is
         RECOVERY by default, STANDBY with -StandbyFile, or left NORECOVERY
         with -NoRecovery (shipping secondary stays loading). With no logs
         the tail is the full or diff itself. -StandbyFile and -NoRecovery
@@ -239,7 +239,7 @@ function Restore-SqlChain {
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [Parameter(Mandatory)][string]$Directory,
+        [Parameter(Mandatory)][string[]]$Directory,
         [Parameter(Mandatory)][string]$Database,
         [Parameter(Mandatory)][string]$TargetDatabase,
         [string]$FullPattern,
@@ -277,19 +277,55 @@ function Restore-SqlChain {
         }
         return ($rest -like '*copy*only*')
     }
-    $full = Get-ChildItem -LiteralPath $Directory -File -Filter $FullPattern |
-        Where-Object { -not (Test-CopyOnlyName $_.Name $fullPrefix) } |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if (-not $full) { throw "No full backup matching $FullPattern in $Directory" }
-    $diff = Get-ChildItem -LiteralPath $Directory -File -Filter $DiffPattern |
-        Where-Object { -not (Test-CopyOnlyName $_.Name $diffPrefix) } |
-        Where-Object { $_.LastWriteTime -ge $full.LastWriteTime } |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    function Get-BackupSets([string]$Pattern, [string]$Prefix) {
+        $files = @(foreach ($dir in $Directory) {
+            Get-ChildItem -LiteralPath $dir -File -Filter $Pattern |
+                Where-Object { -not (Test-CopyOnlyName $_.Name $Prefix) }
+        })
+        $groups = @{}
+        $sets = @()
+        $expression = '^' + [regex]::Escape($Prefix) + '(?<copyonly>copyonly_)?(?<stamp>\d{8}_\d{6})_s(?<index>\d{2})of(?<total>\d{2})\.bak\.zst$'
+        foreach ($file in $files) {
+            $match = [regex]::Match($file.Name, $expression, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if (-not $match.Success) {
+                # Preserve existing single-file naming conventions.
+                $sets += [pscustomobject]@{ Name = $file.Name; Time = $file.LastWriteTime; Files = @($file) }
+                continue
+            }
+            $stamp = [datetime]::ParseExact($match.Groups['stamp'].Value, 'yyyyMMdd_HHmmss', [cultureinfo]::InvariantCulture)
+            $total = [int]$match.Groups['total'].Value
+            $index = [int]$match.Groups['index'].Value
+            if ($total -lt 1 -or $index -lt 1 -or $index -gt $total) {
+                throw "Invalid stripe index in $($file.Name)"
+            }
+            $key = "$(($Prefix).ToLowerInvariant())|$($match.Groups['copyonly'].Value.ToLowerInvariant())|$($match.Groups['stamp'].Value)|$total"
+            if (-not $groups.ContainsKey($key)) {
+                $groups[$key] = [pscustomobject]@{ Name = "$Prefix$($match.Groups['stamp'].Value) ($total stripes)"; Time = $stamp; Total = $total; Stripes = @{} }
+            }
+            if ($groups[$key].Stripes.ContainsKey($index)) { throw "Duplicate stripe index $index in $($groups[$key].Name)" }
+            $groups[$key].Stripes[$index] = $file
+        }
+        foreach ($group in $groups.Values) {
+            $orderedFiles = @(
+                for ($index = 1; $index -le $group.Total; $index++) {
+                    if (-not $group.Stripes.ContainsKey($index)) { throw "Missing stripe index $index in $($group.Name)" }
+                    $group.Stripes[$index]
+                }
+            )
+            $sets += [pscustomobject]@{ Name = $group.Name; Time = $group.Time; Files = $orderedFiles }
+        }
+        return $sets
+    }
+    $full = Get-BackupSets $FullPattern $fullPrefix |
+        Sort-Object Time -Descending | Select-Object -First 1
+    if (-not $full) { throw "No full backup matching $FullPattern in $($Directory -join ', ')" }
+    $diff = Get-BackupSets $DiffPattern $diffPrefix |
+        Where-Object { $_.Time -ge $full.Time } |
+        Sort-Object Time -Descending | Select-Object -First 1
     $anchor = if ($diff) { $diff } else { $full }
-    $logs = @(Get-ChildItem -LiteralPath $Directory -File -Filter $LogPattern |
-        Where-Object { -not (Test-CopyOnlyName $_.Name $logPrefix) } |
-        Where-Object { $_.LastWriteTime -ge $anchor.LastWriteTime } |
-        Sort-Object LastWriteTime)
+    $logs = @(Get-BackupSets $LogPattern $logPrefix |
+        Where-Object { $_.Time -ge $anchor.Time } |
+        Sort-Object Time)
     if (-not $logs -or $logs.Count -eq 0) {
         Write-Warning "No log backups after $($anchor.Name); restoring full/diff only."
     }
@@ -304,9 +340,9 @@ function Restore-SqlChain {
         # Point-in-time restores apply STOPAT to every log restore and stop
         # at the log containing the target time (file time is the proxy for
         # coverage end): earlier logs plus the first log after the target.
-        $containing = @($logs | Where-Object { $_.LastWriteTime -gt $StopAt } |
+        $containing = @($logs | Where-Object { $_.Time -gt $StopAt } |
             Select-Object -First 1)
-        $logs = @(@($logs | Where-Object { $_.LastWriteTime -le $StopAt }) + $containing)
+        $logs = @(@($logs | Where-Object { $_.Time -le $StopAt }) + $containing)
     }
     $sequence = @(
         @{ File = $full; Recovery = 'norecovery' }
@@ -341,7 +377,8 @@ function Restore-SqlChain {
             else { $opts[$flag] = $null }
         }
         if ($step.ContainsKey('StopAt')) { $opts['stopat'] = $step.StopAt }
-        $args = @('restore', (Join-PluginConfig 'local' @{ path = $step.File.FullName })) +
+        $paths = @($step.File.Files | ForEach-Object { $_.FullName })
+        $args = @('restore', (Join-LocalPathConfig -Path $paths)) +
             $Transform + @((Join-PluginConfig 'db' $opts))
         if ($PSCmdlet.ShouldProcess($step.File.Name, "restore WITH $($step.Recovery.ToUpper())")) {
             $null = Invoke-SqlSqueeze -Arguments $args -ExePath $ExePath

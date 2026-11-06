@@ -9,13 +9,14 @@ $env:SQLSQUEEZE_EXE = 'C:\tools\sqlsqueeze\sqlsqueeze.exe'  # or put it on PATH
 Backup-SqlDatabase -Database app -Path /backups/app.bak.zst
 # One backup, two drives, when the database does not fit on one volume:
 Backup-SqlDatabase -Database app -Path @(
-    'C:\Backups\app_full_p1.bak.zst',
-    'D:\Backups\app_full_p2.bak.zst')
+    'C:\Backups\app_full_20261106_013000_s01of02.bak.zst',
+    'D:\Backups\app_full_20261106_013000_s02of02.bak.zst')
 Backup-SqlDatabase -Database app -Path /backups/app.bak.gz.aes `
     -Transform @('gzip', 'aes(passwordEnv=BACKUP_KEY)') -BackupType Differential -Checksum
 Restore-SqlDatabase -Path /backups/app.bak.zst -Database app_copy -Replace
 Remove-SqlBackup -Directory /backups -Pattern '*.bak.zst' -OlderThanDays 30
 Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy
+Restore-SqlChain -Directory @('C:\Backups', 'D:\Backups') -Database app -TargetDatabase app_copy
 Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy -StandbyFile /backups/undo.sby -WhatIf
 Restore-SqlChain -Directory /backups -Database app -TargetDatabase app_copy -StopAt '2024-05-01 13:30:00'
 Test-SqlBackup -Path /backups/app.bak.zst -ServerInstance .  # +VERIFYONLY when sqlcmd exists
@@ -32,13 +33,23 @@ FORMAT is default-on at the engine level (each path is created fresh;
 there is no format switch). Native COMPRESSION is replaced by the
 zstd/gzip transform.
 
-`Restore-SqlChain` picks the latest full, the latest diff after it, and
-the logs after that, restoring everything `NORECOVERY` except the tail
+`Restore-SqlChain` picks the latest full set, the latest diff set after it, and
+the log sets after that, restoring everything `NORECOVERY` except the tail
 (`RECOVERY`, or `STANDBY` with `-StandbyFile`, or `NORECOVERY` with
-`-NoRecovery`). It still restores one file per step. Files with a
+`-NoRecovery`). `-Directory` accepts one directory or a string array for
+stripes on different drives. Name each stripe
+`<db>_<type>_[copyonly_]<yyyyMMdd_HHmmss>_s<ii>of<nn>.bak.zst`, with
+two-digit, one-based `ii` and `nn` (for example,
+`app_full_20261106_013000_s01of02.bak.zst` and
+`app_full_20261106_013000_s02of02.bak.zst`). Files sharing database,
+type, copy-only marker, timestamp, and `nn` form one backup set. The
+planner checks that every index from 1 through `nn` exists, then restores
+the set in index order as one `local(path=...;path=...)` step. Files with
+older names remain individual restore steps. Files with a
 `copy...only` marker after the `<db>_<type>_` prefix are never picked
-(mark every stripe that way, e.g. `app_full_copyonly_p1.bak.zst` on `C:`
-and `app_full_copyonly_p2.bak.zst` on `D:`). `Backup-SqlDatabase
+(mark every stripe that way, e.g. `app_full_copyonly_20261106_013000_s01of02.bak.zst`
+on `C:` and `app_full_copyonly_20261106_013000_s02of02.bak.zst`
+on `D:`). `Backup-SqlDatabase
 -CopyOnly` warns once per `-Path` entry whose file name has no such
 marker.
 `-StopAt` puts `STOPAT` on every log restore and stops at the log
@@ -62,7 +73,7 @@ Device count is the path count (variable, not fixed). Restore needs the
 same stripes in the same order. WITH FORMAT is default-on at the engine
 level; native COMPRESSION is replaced by the zstd/gzip transform.
 Copy-only stripe file names still need a `copy...only` marker
-(`app_full_copyonly_p1.bak.zst`); `-CopyOnly` warns per unmarked path.
+(`app_full_copyonly_20261106_013000_s01of02.bak.zst`); `-CopyOnly` warns per unmarked path.
 
 ## SQL Agent jobs (`sql-agent/`)
 
