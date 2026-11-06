@@ -27,11 +27,18 @@ function Invoke-SqlSqueeze {
     $exe = Resolve-SqlSqueezeExe -ExePath $ExePath
     $lines = & $exe @Arguments --json 2>&1
     $code = $LASTEXITCODE
-    $json = ($lines | Select-Object -Last 1).ToString()
+    # The result is the last line that is a JSON object: the SQL Server VDI
+    # library can print an abort notice after it. Fall back to the last line.
+    $text = @($lines | ForEach-Object { $_.ToString() })
+    $json = $text | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1
+    if (-not $json) { $json = $text | Select-Object -Last 1 }
+    if (-not $json) { $json = '' }
     $result = $null
     try { $result = $json | ConvertFrom-Json } catch { }
     if ($code -ne 0 -or $null -eq $result -or $result.status -ne 'ok') {
-        $msg = if ($result -and $result.message) { $result.message } else { ($lines -join "`n") }
+        $msg = if ($result -and $result.message) { $result.message }
+            elseif ($result -and $result.problems) { @($result.problems) -join '; ' }
+            else { ($lines -join "`n") }
         throw "sqlsqueeze failed (exit $code): $msg"
     }
     return $result
@@ -208,6 +215,37 @@ function Test-SqlBackup {
         Bytes    = $file.Length
         Verified = $verified
     }
+}
+
+function Test-SqlSqueezeBackup {
+    <#
+    .SYNOPSIS
+        Verify a SqlSqueeze backup file without SQL Server (sqlsqueeze verify).
+    .DESCRIPTION
+        Reads the file back through its transform chain (decrypt, decompress)
+        and compares sizes and SHA-256 of the stored file and of the decoded
+        stream with the manifest written next to it at backup time. Throws
+        when anything differs. Use the same -Transform you used to back up.
+        Without a manifest it can only confirm the file decodes (warns).
+        This does not ask SQL Server whether the decoded stream is a valid
+        backup; Test-SqlBackup does that for native-format files.
+    .EXAMPLE
+        Test-SqlSqueezeBackup -Path /backups/app.bak.gz.aes -Transform @('gzip', 'aes(passwordEnv=BACKUP_KEY)')
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)][string]$Path,
+        [string[]]$Transform = @('zstd'),
+        [string]$ExePath
+    )
+    $args = @('verify', (Join-PluginConfig 'local' @{ path = $Path })) + $Transform
+    $result = Invoke-SqlSqueeze -Arguments $args -ExePath $ExePath
+    if (-not $result.manifestFound) {
+        Write-Warning "No manifest next to $Path; only confirmed that the file decodes."
+    }
+    Write-Host ("Verified: {0:N0} bytes stored, {1:N0} bytes decoded" -f
+        $result.storedBytes, $result.rawBytes)
+    return $result
 }
 
 function Restore-SqlChain {
@@ -388,4 +426,4 @@ function Restore-SqlChain {
 }
 
 Export-ModuleMember -Function Backup-SqlDatabase, Restore-SqlDatabase,
-    Remove-SqlBackup, Test-SqlBackup, Restore-SqlChain
+    Remove-SqlBackup, Test-SqlBackup, Test-SqlSqueezeBackup, Restore-SqlChain

@@ -72,9 +72,13 @@ int msbp_vdi_dev_complete_command(MsbpHandle device, VDC_Command* cmd,
         cmd, completionCode, bytesTransferred, static_cast<int64_t>(position));
 }
 
+// The ClientVirtualDevice pointer returned by OpenDevice is owned by the
+// device set (Microsoft's own sample never deletes it); the set's Close
+// releases everything. Deleting it here corrupts the heap
+// ("free(): invalid pointer" at the end of a working backup).
 void msbp_vdi_dev_free(MsbpHandle device)
 {
-    delete static_cast<ClientVirtualDevice*>(device);
+    (void)device;
 }
 
 } // extern "C"

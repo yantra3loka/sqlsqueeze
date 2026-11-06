@@ -1,0 +1,132 @@
+# Runs SqlSqueeze's live scenarios against a REAL SQL Server, for free, on a
+# GitHub-hosted runner (free for public repositories). The unit tests in CI use
+# fakes; this installs SQL Server (Developer edition, which Microsoft licenses
+# for development and testing) natively on the runner, because VDI needs the
+# client and the server on the same host, builds the Linux VDI shim against it,
+# and runs tools/live-test/live.sh.
+name: Live SQL Server
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    # Weekly, so a new SQL Server build or a change in Microsoft's packages shows up
+    # here before it shows up for a user.
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: SQL Server ${{ matrix.version }} on Ubuntu ${{ matrix.ubuntu }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Only combinations Microsoft's packages support on a free runner. Not here, and why:
+        #   SQL Server 2019 on Ubuntu 22.04: the package needs libldap-2.4, gone from 22.04.
+        #   SQL Server 2022 on Ubuntu 24.04: installs but will not start (needs liblber-2.5).
+        # repo_ubuntu is which Microsoft package repository to use.
+        include:
+          - version: '2022'
+            ubuntu: '22.04'
+            repo_ubuntu: '22.04'
+          - version: '2025'
+            ubuntu: '22.04'
+            repo_ubuntu: '22.04'
+          - version: '2025'
+            ubuntu: '24.04'
+            repo_ubuntu: '24.04'
+    runs-on: ubuntu-${{ matrix.ubuntu }}
+    timeout-minutes: 40
+    env:
+      # Not a secret: this SQL Server exists only for the length of this job.
+      SA_PASSWORD: 'Sq!Live-Test-2026'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install SQL Server ${{ matrix.version }} (Developer edition, for testing)
+        run: |
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc > /dev/null
+          curl -fsSL "https://packages.microsoft.com/config/ubuntu/${{ matrix.repo_ubuntu }}/mssql-server-${{ matrix.version }}.list" \
+            | sudo tee /etc/apt/sources.list.d/mssql-server-${{ matrix.version }}.list
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y mssql-server mssql-tools18 unixodbc-dev
+          sudo MSSQL_SA_PASSWORD="$SA_PASSWORD" MSSQL_PID=Developer ACCEPT_EULA=Y /opt/mssql/bin/mssql-conf -n setup accept-eula
+          systemctl is-active mssql-server
+          for i in $(seq 1 30); do
+            /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$SA_PASSWORD" -Q "SELECT @@VERSION" && break
+            sleep 2
+          done
+
+      - name: Build and publish SqlSqueeze with the VDI shim
+        run: |
+          make -C native/linux
+          dotnet publish SqlSqueeze.Cli -c Release -r linux-x64 --self-contained -o out
+          cp native/linux/libmsbpvdi.so out/
+          # the mssql user must be able to run it
+          sudo rm -rf /opt/sqs-app && sudo cp -r out /opt/sqs-app && sudo chmod -R a+rX /opt/sqs-app
+
+      - name: Live tests
+        run: SQS_APP=/opt/sqs-app SA_PASSWORD="$SA_PASSWORD" bash tools/live-test/live.sh
+
+      - name: SQL Server error log (on failure)
+        if: failure()
+        run: |
+          sudo tail -n 80 /var/opt/mssql/log/errorlog || true
+          sudo journalctl -u mssql-server --no-pager | tail -n 40 || true
+
+  windows:
+    name: SQL Server Express (current) on Windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      SA_PASSWORD: 'Sq!Live-Test-2026'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # Express is free and has the same VDI as every other edition. The default
+      # instance, with SQL logins on, so `localhost` and sa work as on Linux.
+      # The download link is Microsoft's current Express, which is 2025 at the time of writing.
+      - name: Install SQL Server Express
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'sqlsetup'
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2216019' -OutFile "$dir\ssei.exe"
+          Start-Process "$dir\ssei.exe" -Wait -ArgumentList '/Action=Download', '/MediaType=Core', "/MediaPath=$dir", '/Quiet'
+          Get-ChildItem $dir
+          $media = Get-ChildItem $dir -Filter 'SQLEXPR*.exe' | Select-Object -First 1
+          Start-Process $media.FullName -Wait -ArgumentList '/Q', "/X:$dir\media"
+          $p = Start-Process "$dir\media\setup.exe" -Wait -PassThru -ArgumentList '/Q', '/ACTION=Install', '/IACCEPTSQLSERVERLICENSETERMS', '/FEATURES=SQLEngine', '/INSTANCENAME=MSSQLSERVER', '/SECURITYMODE=SQL', "/SAPWD=$env:SA_PASSWORD", '/SQLSYSADMINACCOUNTS=BUILTIN\Administrators', '/TCPENABLED=1', '/UPDATEENABLED=0'
+          Write-Host "setup exit code $($p.ExitCode)"
+          if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { Get-Content "$env:ProgramFiles\Microsoft SQL Server\*\Setup Bootstrap\Log\Summary.txt" -ErrorAction SilentlyContinue; exit 1 }
+          Get-Service MSSQLSERVER
+
+      - name: Tools (sqlcmd, jq)
+        run: |
+          command -v sqlcmd || choco install sqlcmd -y --no-progress
+          command -v jq || choco install jq -y --no-progress
+          export PATH="$PATH:/c/ProgramData/chocolatey/bin"
+          for i in $(seq 1 30); do
+            SQLCMDPASSWORD="$SA_PASSWORD" sqlcmd -C -S localhost -U sa -Q "SELECT @@VERSION" && break
+            sleep 2
+          done
+
+      - name: Publish SqlSqueeze
+        run: dotnet publish SqlSqueeze.Cli -c Release -r win-x64 --self-contained -o out
+
+      - name: Live tests
+        run: |
+          export PATH="$PATH:/c/ProgramData/chocolatey/bin"
+          SQS_APP="$PWD/out" SA_PASSWORD="$SA_PASSWORD" bash tools/live-test/live.sh

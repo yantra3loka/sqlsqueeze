@@ -1,30 +1,54 @@
+Reconciled Oct 2026 against the SqlSqueeze tree (v1.7.0). The 2008-era
+items below are kept for history; status follows each in [brackets].
+
 Needs a completion message with stats: MB/s, MB read, MB written, compression ratio, etc
+[done: --json reports bytesProcessed/estimatedBytes/elapsedSeconds/mbPerSecond]
+
 restore on top of an existing database? no error message
+[done: replace; without it SQL Server refuses when the tail log is unbacked]
+
 package version number does not match assembly's version number.
+[done: release.yml stamps /p:Version from the v* tag; csproj carries the base]
+
 cntl-c kills the app, but we can handle the event: http://www.codeneverwritten.com/2006/10/ctrl-c-and-net-console-application.html
+[done on master after v1.7.0 (unreleased): first press signals VDI abort so the normal failure path
+runs (partial files removed, KILL_CONNECTIONS restore back to multi-user);
+second press, or a press with nothing in flight, kills immediately.
+Live-verified: mid-backup cancel exits -1 with SQL abort message, no
+partial left behind. Mid-restore cancel still leaves the DB RESTORING by
+design — documented, not fixed.]
+
 Do escaped cmd line args work?
-error on overwrite? 
+[done: ";;" escapes ";" in component configs (ConfigUtil)]
+
+error on overwrite?
+[open for backup: local FileMode.Create silently truncates, and a failed
+backup leaves pre-existing paths truncated. unpack refuses to overwrite.]
 
 does it work w/ SQL express? yes, but I have sql installed too.
+[done and live-verified: 2022 Express RTM + 2019 Developer, Oct 2026]
 
 better device timeout, longer execution timeout (db might be locked)
+[done: backup/restore commands run unlimited (CommandTimeout=0), size
+estimation 10 min, VDI GetConfiguration 1 min]
+
 check file extensions
+[open: no extension validation; any path is accepted]
 
 document:
-only works on the same machine as SQL Server
-how to do log backups
-which compression should I use?  How do they compare?
-list plugins
-
+only works on the same machine as SQL Server [done: README + docs/DBA-GUIDE.md]
+how to do log backups [done: backuptype=log + chain docs]
+which compression should I use?  How do they compare? [open: no comparison doc]
+list plugins [done: listplugins / helpplugin]
 
 roadmap:
-gui
-when overwriting a file, don't destroy/recreate, but overwrite in place to preserve a defraged file.
-encryption plugin
-ftp plugin
-7z plugin
-zip plugin
+gui [dropped: non-goal, engine slots into Ola/dbatools setups]
+when overwriting a file, don't destroy/recreate, but overwrite in place to preserve a defraged file. [open]
+encryption plugin [done: aes]
+ftp plugin [dropped: s3/azure cover off-site]
+7z plugin [dropped]
+zip plugin [done: zip64]
 
 done:
 striped backups
-make it SQL 2000 compatible.
+make it SQL 2000 compatible. [obsolete: floor is SQL 2016+ VDI behavior]

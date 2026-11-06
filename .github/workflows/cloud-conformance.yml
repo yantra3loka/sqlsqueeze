@@ -1,0 +1,120 @@
+# Runs SqlSqueeze's S3 and Azure storage against real server implementations, for
+# free: SeaweedFS and RustFS (two independent, signature-checking S3 servers), moto
+# (a lenient S3 mock, kept because it is what the unit tests imitate) and Azurite
+# (Microsoft's Azure Blob emulator). The scenarios are tools/cloud-conformance/run.sh,
+# the same script anyone can point at their own AWS, Azure or S3-compatible account.
+#
+# Why this exists: the first run found that SqlSqueeze's S3 requests were rejected by
+# every signature-checking server (a missing x-amz-content-sha256 header, and query
+# strings encoded twice) and that Azure mangled blob names containing % or #. moto and
+# the fakes in the unit tests do not check signatures, so nothing had noticed.
+name: Cloud conformance
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: '41 5 * * 1'
+  workflow_dispatch:
+
+jobs:
+  s3:
+    name: S3 against ${{ matrix.server }}
+    strategy:
+      fail-fast: false
+      matrix:
+        server: [seaweedfs, rustfs, moto]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Not secrets: these servers exist only for the length of this job.
+      SQS_S3_ACCESSKEY: conformancekey
+      SQS_S3_SECRET: conformance-secret-123
+      SQS_S3_BUCKET: conformance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish SqlSqueeze
+        run: dotnet publish SqlSqueeze.Cli -c Release -r linux-x64 --self-contained -o out
+
+      - name: Start ${{ matrix.server }}
+        run: |
+          # a venv: the runner's system Python has packages that clash with boto3's
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet boto3 'moto[server]==5.2.4'
+          export PATH="$RUNNER_TEMP/venv/bin:$PATH"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          case "${{ matrix.server }}" in
+            seaweedfs)
+              cat > "$RUNNER_TEMP/s3.json" <<JSON
+          {"identities":[{"name":"ci","credentials":[{"accessKey":"$SQS_S3_ACCESSKEY","secretKey":"$SQS_S3_SECRET"}],"actions":["Admin","Read","Write","List","Tagging"]}]}
+          JSON
+              docker run -d --name s3 -p 9000:8333 -v "$RUNNER_TEMP/s3.json:/etc/s3.json" \
+                chrislusf/seaweedfs:4.50 server -s3 -s3.config=/etc/s3.json -dir=/data ;;
+            rustfs)
+              docker run -d --name s3 -p 9000:9000 -e RUSTFS_ACCESS_KEY="$SQS_S3_ACCESSKEY" -e RUSTFS_SECRET_KEY="$SQS_S3_SECRET" \
+                rustfs/rustfs:1.0.4 ;;
+            moto)
+              nohup moto_server -p 9000 > moto.log 2>&1 & ;;
+          esac
+          for i in $(seq 60); do curl -s -o /dev/null -m 2 http://localhost:9000/ && break; sleep 1; done
+          python3 - <<'PY'
+          import boto3, os, time
+          c = boto3.client('s3', endpoint_url='http://localhost:9000', region_name='us-east-1',
+                           aws_access_key_id=os.environ['SQS_S3_ACCESSKEY'], aws_secret_access_key=os.environ['SQS_S3_SECRET'])
+          for i in range(30):
+              try:
+                  c.create_bucket(Bucket=os.environ['SQS_S3_BUCKET']); break
+              except Exception as e:
+                  print('waiting for the server:', e); time.sleep(2)
+          else:
+              raise SystemExit('could not create the bucket')
+          PY
+
+      - name: Conformance
+        run: SQS_APP="$PWD/out" SQS_S3_ENDPOINT=http://localhost:9000 bash tools/cloud-conformance/run.sh s3
+
+      - name: Server log (on failure)
+        if: failure()
+        run: docker logs s3 2>&1 | tail -n 60 || tail -n 60 moto.log
+
+  azure:
+    name: Azure Blob against Azurite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish SqlSqueeze
+        run: dotnet publish SqlSqueeze.Cli -c Release -r linux-x64 --self-contained -o out
+
+      - name: Start Azurite
+        run: |
+          npm install --silent --prefix "$RUNNER_TEMP/azurite" azurite@3.37.0
+          nohup "$RUNNER_TEMP/azurite/node_modules/.bin/azurite-blob" --silent --skipApiVersionCheck --location "$RUNNER_TEMP/azdata" --blobPort 10000 > azurite.log 2>&1 &
+          for i in $(seq 30); do curl -s -o /dev/null -m 2 http://127.0.0.1:10000/ && break; sleep 1; done
+
+      - name: Create the container
+        env:
+          # Azurite's published development account; not a secret
+          SQS_AZ_KEY: 'Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=='
+        run: |
+          echo hi > dummy.bin
+          out/sqlsqueeze copy "file://$PWD/dummy.bin" "azure(endpoint=http://127.0.0.1:10000/devstoreaccount1;container=conformance;blob=setup/dummy;account=devstoreaccount1;accountkeyenv=SQS_AZ_KEY)"
+
+      - name: Conformance
+        env:
+          SQS_AZ_KEY: 'Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=='
+        run: |
+          SQS_APP="$PWD/out" SQS_AZ_ENDPOINT=http://127.0.0.1:10000/devstoreaccount1 \
+            SQS_AZ_ACCOUNT=devstoreaccount1 SQS_AZ_CONTAINER=conformance \
+            bash tools/cloud-conformance/run.sh azure

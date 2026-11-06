@@ -42,6 +42,8 @@ namespace SqlSqueeze.Plugins
 
 
             mRestoreParamSchema = new Dictionary<string, ParameterInfo>(StringComparer.InvariantCultureIgnoreCase);
+            // Backup-only: accepted and ignored so one pipeline spec works for backup and restore.
+            mRestoreParamSchema.Add("level", new ParameterInfo(false, false));
         }
 
         #region IBackupTransformer Members

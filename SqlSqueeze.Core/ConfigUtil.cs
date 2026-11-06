@@ -21,11 +21,10 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
-using SqlSqueeze.Core;
 
-namespace SqlSqueeze.Cli
+namespace SqlSqueeze.Core
 {
-    internal static class ConfigUtil
+    public static class ConfigUtil
     {
 
 

@@ -27,11 +27,33 @@ namespace SqlSqueeze.Core
     /// side); EstimatedBytes is the pre-run size estimate and may be 0
     /// when it cannot be estimated (e.g. restores).
     /// </summary>
+    public class CopyOutcome
+    {
+        public string Destination { get; set; }
+        public bool Ok { get; set; }
+        public int Attempts { get; set; }
+        public long BytesCopied { get; set; }
+        public long BytesSkipped { get; set; }
+        public System.Collections.Generic.List<string> Problems { get; } = new System.Collections.Generic.List<string>();
+    }
+
     public class BackupStats
     {
         public long BytesProcessed;
         public long EstimatedBytes;
         public TimeSpan Elapsed;
+
+        /// <summary>Where this backup was copied after it was taken (--copy-to), and how each copy went.</summary>
+        public System.Collections.Generic.List<CopyOutcome> Copies = new System.Collections.Generic.List<CopyOutcome>();
+
+        /// <summary>
+        /// What went wrong copying a backup that itself succeeded. Not a backup failure, but not
+        /// something to hide either: the caller reports it and exits non-zero.
+        /// </summary>
+        public System.Collections.Generic.List<string> CopyProblems = new System.Collections.Generic.List<string>();
+
+        /// <summary>Things worth telling the user that did not fail the operation (for example orphaned users after a restore).</summary>
+        public System.Collections.Generic.List<string> Warnings = new System.Collections.Generic.List<string>();
 
         public double MegaBytesPerSecond
         {

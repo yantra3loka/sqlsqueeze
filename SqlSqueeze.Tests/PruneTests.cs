@@ -61,6 +61,52 @@ namespace SqlSqueeze.Tests
         }
 
         [Fact]
+        public void AgedBackup_TakesItsManifestWithIt()
+        {
+            DateTime now = DateTime.UtcNow;
+            string oldBak = WriteFile("old.bak.zst", 100, now.AddDays(-40));
+            string oldManifest = WriteFile("old.bak.zst.manifest.json", 7, now.AddDays(-40));
+
+            var result = new LocalStorage().PruneOldFiles(
+                Cfg(("dir", _dir), ("pattern", "*.bak.zst"), ("olderthandays", "30")));
+
+            Assert.Equal(1, result.DeletedFiles);
+            Assert.Equal(107, result.BytesReclaimed);
+            Assert.False(File.Exists(oldBak));
+            Assert.False(File.Exists(oldManifest));
+        }
+
+        [Fact]
+        public void YoungBackup_KeepsItsManifest()
+        {
+            DateTime now = DateTime.UtcNow;
+            string newBak = WriteFile("new.bak.zst", 100, now.AddHours(-1));
+            string newManifest = WriteFile("new.bak.zst.manifest.json", 7, now.AddHours(-1));
+
+            var result = new LocalStorage().PruneOldFiles(
+                Cfg(("dir", _dir), ("pattern", "*.bak.zst"), ("olderthandays", "30")));
+
+            Assert.Equal(0, result.DeletedFiles);
+            Assert.True(File.Exists(newBak));
+            Assert.True(File.Exists(newManifest));
+        }
+
+        [Fact]
+        public void StarPattern_CountsABackupAndItsManifestOnce()
+        {
+            DateTime now = DateTime.UtcNow;
+            WriteFile("old.bak", 100, now.AddDays(-40));
+            WriteFile("old.bak.manifest.json", 7, now.AddDays(-40));
+
+            var result = new LocalStorage().PruneOldFiles(
+                Cfg(("dir", _dir), ("olderthandays", "30")));
+
+            Assert.Equal(1, result.DeletedFiles);
+            Assert.Equal(107, result.BytesReclaimed);
+            Assert.Empty(Directory.GetFiles(_dir));
+        }
+
+        [Fact]
         public void DefaultPatternIsStar()
         {
             DateTime now = DateTime.UtcNow;

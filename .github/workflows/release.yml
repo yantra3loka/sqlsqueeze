@@ -77,5 +77,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ls dist
-          gh release create "${GITHUB_REF_NAME}" --title "SqlSqueeze ${GITHUB_REF_NAME}" \
-            --generate-notes dist/*
+          # Hand-written notes (docs/releases/<tag>.md) when there are any, otherwise a commit list.
+          if [ -f "docs/releases/${GITHUB_REF_NAME}.md" ]; then
+            gh release create "${GITHUB_REF_NAME}" --title "SqlSqueeze ${GITHUB_REF_NAME}" \
+              --notes-file "docs/releases/${GITHUB_REF_NAME}.md" dist/*
+          else
+            gh release create "${GITHUB_REF_NAME}" --title "SqlSqueeze ${GITHUB_REF_NAME}" \
+              --generate-notes dist/*
+          fi

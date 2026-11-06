@@ -62,6 +62,8 @@ namespace SqlSqueeze.Plugins.Database
             mRestoreParamSchema.Add("instancename", new ParameterInfo(false, false));
             mRestoreParamSchema.Add("ClusterNetworkName", new ParameterInfo(false, false));
             mRestoreParamSchema.Add("restoretype", new ParameterInfo(false, false));
+            // not a RESTORE option: roll back other sessions first so the restore can get exclusive access
+            mRestoreParamSchema.Add("KILL_CONNECTIONS", new ParameterInfo(false, false));
             mRestoreParamSchema.Add("CHECKSUM", new ParameterInfo(false, false));
             mRestoreParamSchema.Add("NO_CHECKSUM", new ParameterInfo(false, false));
             mRestoreParamSchema.Add("STOP_ON_ERROR", new ParameterInfo(false, false));
@@ -372,11 +374,6 @@ namespace SqlSqueeze.Plugins.Database
 
 
             SqlParameter param;
-            param = new SqlParameter("@databasename", SqlDbType.NVarChar, 255);
-            param.Value = config["database"][0];
-            cmd.Parameters.Add(param);
-
-
 
             // default values:
             RestoreType restoreType = RestoreType.Database;
@@ -391,10 +388,23 @@ namespace SqlSqueeze.Plugins.Database
                     case "log":
                         restoreType = RestoreType.Log;
                         break;
+                    case "verifyonly":
+                        restoreType = RestoreType.VerifyOnly;
+                        break;
                     default:
                         throw new ArgumentException(string.Format("db: Unknown restoreType: {0}", config["restoretype"][0]));
                 }
             }
+
+            if (restoreType == RestoreType.VerifyOnly)
+            {
+                ConfigureVerifyOnlyCommand(config, deviceNames, cmd);
+                return;
+            }
+
+            param = new SqlParameter("@databasename", SqlDbType.NVarChar, 255);
+            param.Value = config["database"][0];
+            cmd.Parameters.Add(param);
 
 
             List<string> withOptions = new List<string>();
@@ -554,7 +564,6 @@ namespace SqlSqueeze.Plugins.Database
             {
                 withOptions.Add("PARTIAL");
             }
-
 
 
             if (config.ContainsKey("READ_WRITE_FILEGROUPS"))
@@ -732,6 +741,41 @@ namespace SqlSqueeze.Plugins.Database
             cmd.CommandText = string.Format("RESTORE {0} @databasename {1}FROM {2}{3};", databaseOrLog, filegroupClause, string.Join(",", devSql.ToArray()), withClause);
         }
 
+        // RESTORE VERIFYONLY has no database name and only a few options: it asks
+        // SQL Server to read the whole backup (through the virtual device, so any
+        // compression or encryption is already undone) and check that it is valid.
+        private static readonly string[] VerifyOnlyAllowed = { "database", "restoretype", "instancename", "ClusterNetworkName", "CHECKSUM", "NO_CHECKSUM", "STOP_ON_ERROR", "CONTINUE_AFTER_ERROR", "user", "password", "passwordenv" };
+
+        private static void ConfigureVerifyOnlyCommand(Dictionary<string, List<string>> config, IEnumerable<string> deviceNames, SqlCommand cmd)
+        {
+            foreach (string option in config.Keys)
+            {
+                if (Array.FindIndex(VerifyOnlyAllowed, a => a.Equals(option, StringComparison.OrdinalIgnoreCase)) < 0)
+                {
+                    throw new ArgumentException(string.Format("db: restoretype=verifyonly does not take {0}.", option));
+                }
+            }
+
+            List<string> withOptions = new List<string>();
+            foreach (string option in new[] { "CHECKSUM", "NO_CHECKSUM", "STOP_ON_ERROR", "CONTINUE_AFTER_ERROR" })
+            {
+                if (config.ContainsKey(option))
+                {
+                    withOptions.Add(option);
+                }
+            }
+
+            List<string> devSql = new List<string>();
+            foreach (string devName in deviceNames)
+            {
+                devSql.Add(string.Format("VIRTUAL_DEVICE='{0}'", devName));
+            }
+
+            cmd.CommandType = CommandType.Text;
+            cmd.CommandText = string.Format("RESTORE VERIFYONLY FROM {0}{1};", string.Join(",", devSql.ToArray()),
+                withOptions.Count > 0 ? " WITH " + string.Join(",", withOptions.ToArray()) : string.Empty);
+        }
+
         public string CommandLineHelp
         {
             get
@@ -765,7 +809,8 @@ sqlsqueeze has an alias for the db plugin.  A database name in brackets, like [m
         private enum RestoreType
         {
             Database,
-            Log
+            Log,
+            VerifyOnly
         }
     }
 }

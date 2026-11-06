@@ -39,6 +39,8 @@ namespace SqlSqueeze.Plugins
             mBackupParamSchema.Add("level", new ParameterInfo(false, false));
 
             mRestoreParamSchema = new Dictionary<string, ParameterInfo>(StringComparer.InvariantCultureIgnoreCase);
+            // Backup-only: accepted and ignored so one pipeline spec works for backup and restore.
+            mRestoreParamSchema.Add("level", new ParameterInfo(false, false));
         }
 
         public string Name
@@ -77,7 +79,9 @@ Level is ignored on restore.";
             }
 
             Console.WriteLine(string.Format("zstd: level = {0}", level));
-            return new CompressionStream(writeToStream, level);
+            // ZstdSharp leaves the wrapped stream open by default; disposing this stage must
+            // also close the next one down (aes needs that to write its final block).
+            return new CompressionStream(writeToStream, level, leaveOpen: false);
         }
 
         public Stream GetRestoreReader(Dictionary<string, List<string>> config, Stream readFromStream)
@@ -85,7 +89,7 @@ Level is ignored on restore.";
             ParameterInfo.ValidateParams(mRestoreParamSchema, config);
 
             Console.WriteLine("zstd");
-            return new DecompressionStream(readFromStream);
+            return new DecompressionStream(readFromStream, leaveOpen: false);
         }
     }
 }

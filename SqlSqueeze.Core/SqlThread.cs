@@ -19,6 +19,7 @@
 */
 
 using System;
+using System.Text.RegularExpressions;
 using System.Collections.Generic;
 using System.Text;
 using System.Data;
@@ -35,13 +36,15 @@ namespace SqlSqueeze.Core
         //private Exception mException;
         private SqlConnection mCnn;
         private SqlCommand mCmd;
+        private string mMultiUserSql;
         private Task mTask;
         private bool mDisposed;
 
         /// <summary>
-        /// Returns the auto-generated device names
+        /// The SQL Server to connect to: "." (this machine) or the cluster network
+        /// name, plus "\instance" for a named instance.
         /// </summary>
-        public List<string> PreConnect(string clusterNetworkName, string instanceName, string deviceSetName, int numDevices, IBackupDatabase dbComponent, Dictionary<string, List<string>> dbConfig, bool isBackup, IUpdateNotification notifier, out long estimatedTotalBytes)
+        internal static string ResolveDataSource(string clusterNetworkName, string instanceName)
         {
             string serverConnectionName = clusterNetworkName == null ? "." : clusterNetworkName;
             string dataSource = string.IsNullOrEmpty(instanceName) ? serverConnectionName : string.Format(@"{0}\{1}", serverConnectionName, instanceName);
@@ -52,6 +55,15 @@ namespace SqlSqueeze.Core
                 // data source, e.g. instancename=(localdb)\MSSQLLocalDB.
                 dataSource = instanceName;
             }
+            return dataSource;
+        }
+
+        /// <summary>
+        /// Returns the auto-generated device names
+        /// </summary>
+        public List<string> PreConnect(string clusterNetworkName, string instanceName, string deviceSetName, int numDevices, IBackupDatabase dbComponent, Dictionary<string, List<string>> dbConfig, bool isBackup, IUpdateNotification notifier, out long estimatedTotalBytes)
+        {
+            string dataSource = ResolveDataSource(clusterNetworkName, instanceName);
             string connectionString = BuildConnectionString(dataSource, dbConfig);
 
             notifier.OnConnecting(string.Format("Connecting: {0}", RedactConnectionString(connectionString)));
@@ -78,6 +90,13 @@ namespace SqlSqueeze.Core
             {
                 dbComponent.ConfigureRestoreCommand(dbConfig, deviceNames, mCmd);
                 estimatedTotalBytes = 0;
+                if (RestorePreparation.WantsKillConnections(dbConfig))
+                {
+                    // A restore over an existing database needs exclusive access: roll back other sessions.
+                    string database = dbConfig["database"][0];
+                    RunNonQuery(RestorePreparation.KillConnectionsSql(database));
+                    mMultiUserSql = RestorePreparation.MultiUserSql(database);
+                }
             }
 
             return deviceNames;
@@ -548,32 +567,21 @@ namespace SqlSqueeze.Core
             }
         }
 
-        private static int GetMajorVersionNumber(string version)
+        internal static int GetMajorVersionNumber(string version)
         {
-            // example string:
-            // Microsoft SQL Server 2008 (SP1) - 10.0.2531.0 (Intel X86)   Mar 29 2009 10:27:29   Copyright (c) 1988-2008 Microsoft Corporation  Developer Edition on Windows NT 5.1 <X86> (Build 2600: Service Pack 3) 
+            // example strings:
+            // Microsoft SQL Server 2008 (SP1) - 10.0.2531.0 (Intel X86)   Mar 29 2009 10:27:29   Copyright (c) 1988-2008 Microsoft Corporation  Developer Edition on Windows NT 5.1 <X86> (Build 2600: Service Pack 3)
+            // Microsoft SQL Server 2022 (RTM-CU27) (KB5104824) - 16.0.4295.3 (X64) ...
+            // The number follows the dash that has spaces around it: patched builds
+            // have another dash earlier, inside the "(RTM-CU27)" part.
 
-
-            int dashPos = version.IndexOf('-');
-            if (dashPos < 0)
+            Match match = Regex.Match(version ?? string.Empty, @"\s-\s(\d+)\.\d");
+            if (!match.Success)
             {
                 throw new ArgumentException(string.Format("unexpected version string: {0}", version));
             }
 
-            int dotPos = version.IndexOf('.', dashPos);
-
-            if (dotPos < 0)
-            {
-                throw new ArgumentException(string.Format("unexpected version string: {0}", version));
-            }
-
-            int versionNum;
-            if (!int.TryParse(version.Substring(dashPos + 1, dotPos - dashPos - 1), out versionNum))
-            {
-                throw new ArgumentException(string.Format("unexpected version string: {0}", version));
-            }
-
-            return versionNum;
+            return int.Parse(match.Groups[1].Value);
         }
 
         public void BeginExecute()
@@ -585,11 +593,34 @@ namespace SqlSqueeze.Core
             try
             {
                 mTask.GetAwaiter().GetResult();
+                if (mMultiUserSql != null)
+                {
+                    // The restore succeeded after other sessions were ended: put the database
+                    // back to multi-user instead of leaving it single-user. A failed rollback
+                    // is returned (not swallowed) so a stranded single-user database is reported.
+                    // MultiUserSql only acts on an ONLINE database, so a chain step left
+                    // RESTORING (NORECOVERY) is untouched.
+                    try { RunNonQuery(mMultiUserSql); } catch (Exception rollback) { return rollback; }
+                }
                 return null;
             }
             catch (Exception e)
             {
+                if (mMultiUserSql != null)
+                {
+                    // The restore failed after other sessions were ended: do not leave the database single-user.
+                    try { RunNonQuery(mMultiUserSql); } catch (Exception) { }
+                }
                 return e;
+            }
+        }
+
+        private void RunNonQuery(string sql)
+        {
+            using (SqlCommand cmd = new SqlCommand(sql, mCnn))
+            {
+                cmd.CommandTimeout = 0;
+                cmd.ExecuteNonQuery();
             }
         }
 

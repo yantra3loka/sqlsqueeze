@@ -32,3 +32,12 @@ jobs:
       - name: Shim syntax check (Linux only)
         if: runner.os == 'Linux'
         run: g++ -fsyntax-only -I native/linux native/linux/vdishim.cpp
+
+      # Tests for the cron wrapper and the PowerShell module, against a fake
+      # CLI (they need bash and jq, which the Linux runner has).
+      - name: Tool tests (Linux only)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          bash tools/tests/cron-wrapper-test.sh
+          pwsh -NoProfile -File tools/tests/module-test.ps1

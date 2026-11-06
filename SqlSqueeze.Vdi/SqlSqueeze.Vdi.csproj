@@ -6,7 +6,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>VdiNet.VirtualBackupDevice</AssemblyName>
     <RootNamespace>VdiNet.VirtualBackupDevice</RootNamespace>
-    <Version>1.4.0</Version>
+    <Version>1.6.2</Version>
     <Description>C# interop for the SQL Server Virtual Backup Device Interface (VDI), Windows (COM) and Linux (libsqlvdi) backends.</Description>
   </PropertyGroup>
 

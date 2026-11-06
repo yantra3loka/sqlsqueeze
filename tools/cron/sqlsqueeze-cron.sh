@@ -66,12 +66,13 @@ json_escape() {
 }
 
 # Pull a human message out of the CLI's one-line JSON result, when a
-# JSON tool is available. Falls back to the raw line.
+# JSON tool is available. Falls back to the raw line. Errors carry a
+# "message"; a failed verify carries a "problems" list instead.
 extract_message() {
     local line=$1 message
     if command -v jq >/dev/null 2>&1; then
         message=$(printf '%s' "$line" \
-            | jq -r 'if type == "object" then (.message // .status // empty) else empty end' \
+            | jq -r 'if type == "object" then (((.message // ((.problems // []) | join("; "))) | select(. != "")) // .status // empty) else empty end' \
             2>/dev/null)
         if [ -n "$message" ]; then
             printf '%s' "$message"
@@ -174,7 +175,13 @@ main() {
     exit_code=$?
 
     if [ "$exit_code" -ne 0 ]; then
-        last_line=$(printf '%s' "$output" | grep -v '^[[:space:]]*$' | tail -n 1)
+        # The result is the last line that is a JSON object. The SQL Server VDI
+        # library can print an abort notice after it, so the last line of output
+        # is not always the result; fall back to it when there is no JSON at all.
+        last_line=$(printf '%s' "$output" | grep '^[[:space:]]*{' | tail -n 1)
+        if [ -z "$last_line" ]; then
+            last_line=$(printf '%s' "$output" | grep -v '^[[:space:]]*$' | tail -n 1)
+        fi
         operation=${command[0]}
         log "$operation failed with exit code $exit_code"
         notify_failure "$operation" "$exit_code" "$(extract_message "$last_line")" || true
