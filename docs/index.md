@@ -18,6 +18,7 @@ no lock-in: `unpack` hands you back a plain native `.bak` any time.
 |---|---|
 | Windows / Linux binaries | [Releases](https://github.com/yantra3loka/sqlsqueeze/releases) |
 | Install, backup, restore, chains, schedules | [DBA runbook](DBA-GUIDE.html) |
+| Stripe a backup across drives and restore its chain | [Striped backup guide](DBA-GUIDE.html#split-striped-backups) |
 | Drive it through an AI assistant | [LLM operator notes](https://github.com/yantra3loka/sqlsqueeze/blob/master/AGENTS.md) |
 | Ready-made SQL Agent jobs | [Job templates](https://github.com/yantra3loka/sqlsqueeze/tree/master/tools/sql-agent) |
 | PowerShell cmdlets | [SqlSqueeze module](https://github.com/yantra3loka/sqlsqueeze/blob/master/tools/SqlSqueeze.psm1) |

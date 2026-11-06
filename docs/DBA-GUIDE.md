@@ -86,11 +86,27 @@ failing database does not stop the rest; exit code is `-1` if any failed.
 Repeat `path=` for parallel streams (like `BACKUP ... TO DISK=,DISK=`):
 
 ```text
-sqlsqueeze.exe backup "[MyDB]" zstd "local(path=D:\Backups\MyDB_1.bak.zst;path=D:\Backups\MyDB_2.bak.zst)" --json
+sqlsqueeze.exe backup "[MyDB]" zstd "local(path=C:\Backups\MyDB_full_20261106_013000_s01of02.bak.zst;path=D:\Backups\MyDB_full_20261106_013000_s02of02.bak.zst)" --json
 ```
 
 Restore/unpack/copy must list the **same files in the same order**.
 (`key=` repeats for S3, `blob=` for Azure.)
+
+For PowerShell `Restore-SqlChain`, name every stripe
+`<db>_<type>_[copyonly_]<yyyyMMdd_HHmmss>_s<ii>of<nn>.bak.zst`.
+Use two-digit, one-based indices and the same timestamp and total on every
+stripe. The cmdlet accepts multiple directories, groups matching files into
+one restore step in index order, and fails if a stripe is missing:
+
+```powershell
+Restore-SqlChain -Directory @('C:\Backups', 'D:\Backups') -Database MyDB -TargetDatabase MyDB_copy
+```
+
+Mark every copy-only stripe with `copyonly_` after `<db>_<type>_`;
+`Restore-SqlChain` excludes copy-only sets from the chain. Existing files
+without the stripe suffix remain single-file steps. Backup uses `WITH FORMAT`
+by default; `db(noformat)` opts out. `db(name=...;stats=10)` sets the SQL
+backup set name and progress interval. zstd/gzip replaces native compression.
 
 ## Restores
 
